@@ -15,3 +15,6 @@
 pytest==7.4.4
 pytest-qt==4.2.0
 pyinstaller==5.13.2
+# Walidacja .github/workflows/ci.yml (tests/test_ci_workflow.py). Nie jest to
+# zależność runtime ani builda.
+pyyaml==6.0.3

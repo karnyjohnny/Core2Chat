@@ -1123,3 +1123,104 @@ def test_stream_idle_timeout_exceeds_unary_read_timeout():
     provider.configure(read_timeout=30.0, stream_read_timeout=240.0)
     assert provider.client.timeout.read == 30.0
     assert provider.client.stream_timeout.read == 240.0
+
+
+# ------------------------------------------------------- availability filter
+def test_unavailable_models_are_filtered_by_default_and_shown_on_request():
+    """§6: MODEL DISCOVERY -> AVAILABILITY -> FILTER -> UI (no name lists)."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/models"):
+            return json_response(fixture("models_list.json"))
+        return json_response(fixture("interaction_unary.json"))
+
+    provider = make_provider(recording(handler))
+    provider.list_models(force_refresh=True)
+    provider.discovery.mark_unavailable("gemini-2.5-flash",
+                                        "no longer available", 404)
+    provider.discovery.mark_unavailable("gemini-3.8-flash",
+                                        "no longer available", 404)
+
+    hidden = [m.model_id for m in provider.list_models(hide_unavailable=True)]
+    assert "gemini-3.8-flash" not in hidden
+    assert "gemini-2.5-flash" not in hidden
+
+    # With the setting off the model stays visible but is labelled, so the user
+    # can see why it was hidden before.
+    shown = provider.list_models(hide_unavailable=False, include_legacy=True)
+    marked = {m.model_id: m.lifecycle for m in shown}
+    assert marked.get("gemini-3.8-flash") == "shut_down", marked
+    # The reason is available for the UI, so the user knows why.
+    assert provider.discovery.unavailable_models()["gemini-3.8-flash"] == \
+        "no longer available"
+
+
+def test_availability_is_persisted_across_provider_instances(memory_db):
+    from db.repositories import ModelAvailabilityRepository
+
+    repo = ModelAvailabilityRepository(memory_db)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/models"):
+            return json_response(fixture("models_list.json"))
+        return json_response(fixture("interaction_unary.json"))
+
+    first = make_provider(recording(handler), model_availability=repo)
+    first.list_models(force_refresh=True)
+    first.discovery.mark_unavailable("gemini-3.8-flash", "404 from API", 404)
+    assert "gemini-3.8-flash" not in [m.model_id
+                                      for m in first.list_models()]
+
+    # A brand new provider (application restart) must still filter it out.
+    second = make_provider(recording(handler), model_availability=repo)
+    ids = [m.model_id for m in second.list_models(force_refresh=True)]
+    assert "gemini-3.8-flash" not in ids
+    assert second.discovery.unavailable_models()["gemini-3.8-flash"] == \
+        "404 from API"
+
+
+def test_successful_response_clears_learned_unavailability():
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/models"):
+            return json_response(fixture("models_list.json"))
+        return json_response(fixture("interaction_unary.json"))
+
+    provider = make_provider(recording(handler))
+    provider.list_models(force_refresh=True)
+    provider.discovery.mark_unavailable("gemini-3.8-flash", "wcześniejszy błąd")
+    assert "gemini-3.8-flash" not in [m.model_id for m in provider.list_models()]
+    # The plan changed / the model came back: a real response proves it.
+    provider.send_message("gemini-3.8-flash", [ContentPart(text="hi")])
+    assert "gemini-3.8-flash" in [m.model_id for m in provider.list_models()]
+
+
+def test_verify_models_reports_and_persists_probes(memory_db):
+    from db.repositories import ModelAvailabilityRepository
+
+    repo = ModelAvailabilityRepository(memory_db)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/models"):
+            return json_response(fixture("models_list.json"))
+        if ":countTokens" in request.url.path:
+            if "gemini-2.5-flash" in request.url.path:
+                return json_response({"error": {
+                    "message": "This model is no longer available to new users.",
+                    "code": "not_found"}}, status=404)
+            return json_response(fixture("count_tokens.json"))
+        return json_response(fixture("models_list.json"))
+
+    provider = make_provider(recording(handler), model_availability=repo)
+    provider.list_models(force_refresh=True)
+    results = provider.verify_models(limit=4)
+    assert results.get("gemini-2.5-flash") is False
+    assert results.get("gemini-3.8-flash") is True
+    # Learned facts are durable and visible to the settings dialog.
+    report = provider.availability_report()
+    assert any(entry["model_name"] == "gemini-2.5-flash"
+               and not entry["available"] for entry in report)
+    assert "gemini-2.5-flash" not in [m.model_id for m in
+                                      provider.list_models()]
+    # "Wyczyść nauczone" restores the full catalogue.
+    provider.forget_availability()
+    assert "gemini-2.5-flash" in [m.model_id for m in
+                                  provider.list_models(include_legacy=True)]

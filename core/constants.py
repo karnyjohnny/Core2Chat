@@ -12,7 +12,7 @@ from typing import Dict
 
 # ---------------------------------------------------------------- app identity
 APP_NAME = "Core2Chat"
-APP_VERSION = "0.1.0"
+APP_VERSION = "0.1.1"
 APP_ORGANIZATION = "Core2Chat"
 APP_DOMAIN = "core2chat.app"
 APP_DESCRIPTION = "Lightweight native desktop AI chat client"
@@ -101,7 +101,7 @@ DOCUMENT_EXTENSIONS = frozenset({".pdf"})
 
 # ------------------------------------------------------------------- database
 DB_FILE_NAME = "core2chat.sqlite3"
-DB_SCHEMA_VERSION = 1
+DB_SCHEMA_VERSION = 2
 DB_PAGE_SIZE = 4096
 DEFAULT_BUSY_TIMEOUT_MS = 5000
 MESSAGES_PAGE_SIZE = 60
@@ -122,8 +122,10 @@ SIDEBAR_COLOR = "#252526"
 TEXT_COLOR = "#d4d4d4"
 
 # -------------------------------------------------------------------- hotkeys
-DEFAULT_QUICK_CHAT_HOTKEY = "Win+C"
-HOTKEY_ID_QUICK_CHAT = 0xC2C1
+# Global activation hotkey. The value is unchanged so existing user settings
+# keep working after Quick Chat was removed (task §5.1).
+DEFAULT_ACTIVATION_HOTKEY = "Win+C"
+HOTKEY_ID_ACTIVATE = 0xC2C1
 HOTKEY_ID_FOCUS = 0xC2C2
 
 # --------------------------------------------------------------------- search

@@ -846,6 +846,88 @@ class ProviderCacheRepository(object):
         return removed
 
 
+# ------------------------------------------------------- model availability
+class ModelAvailabilityRepository(object):
+    """Durable record of which models this credential can actually use.
+
+    The mechanism is general (task §6): nothing here knows any model name.
+    Facts come from real API responses - a 404 "no longer available" or a
+    successful free ``countTokens`` probe.
+    """
+
+    SOURCE_ERROR = "error"
+    SOURCE_PROBE = "probe"
+    SOURCE_USER = "user"
+
+    def __init__(self, db: Database) -> None:
+        self.db = db
+
+    def mark(self, provider_id: str, model_name: str, available: bool,
+             reason: str = "", http_status: int = 0,
+             source: str = SOURCE_ERROR) -> None:
+        self.db.execute(
+            "INSERT INTO model_availability(provider_id, model_name, available,"
+            " reason, http_status, verified_at, source)"
+            " VALUES(?,?,?,?,?,?,?)"
+            " ON CONFLICT(provider_id, model_name) DO UPDATE SET"
+            " available=excluded.available, reason=excluded.reason,"
+            " http_status=excluded.http_status, verified_at=excluded.verified_at,"
+            " source=excluded.source",
+            (provider_id, model_name, 1 if available else 0, reason[:300],
+             int(http_status), _now(), source))
+
+    def unavailable(self, provider_id: str) -> Dict[str, str]:
+        """``{model_name: reason}`` for everything proven unusable."""
+        rows = self.db.query(
+            "SELECT model_name, reason FROM model_availability"
+            " WHERE provider_id=? AND available=0", (provider_id,))
+        return {_str(row, "model_name"): _str(row, "reason") for row in rows}
+
+    def is_available(self, provider_id: str, model_name: str) -> Optional[bool]:
+        row = self.db.query_one(
+            "SELECT available FROM model_availability WHERE provider_id=?"
+            " AND model_name=?", (provider_id, model_name))
+        if row is None:
+            return None
+        return bool(_int(row, "available"))
+
+    def all_entries(self, provider_id: Optional[str] = None,
+                    limit: int = 500) -> List[Dict[str, Any]]:
+        if provider_id:
+            rows = self.db.query(
+                "SELECT * FROM model_availability WHERE provider_id=?"
+                " ORDER BY available, model_name LIMIT ?",
+                (provider_id, int(limit)))
+        else:
+            rows = self.db.query(
+                "SELECT * FROM model_availability ORDER BY provider_id,"
+                " available, model_name LIMIT ?", (int(limit),))
+        return [{
+            "provider_id": _str(row, "provider_id"),
+            "model_name": _str(row, "model_name"),
+            "available": bool(_int(row, "available")),
+            "reason": _str(row, "reason"),
+            "http_status": _int(row, "http_status"),
+            "verified_at": _int(row, "verified_at"),
+            "source": _str(row, "source"),
+        } for row in rows]
+
+    def forget(self, provider_id: str,
+               model_name: Optional[str] = None) -> int:
+        """Clear learned facts (e.g. after the user fixes their API plan)."""
+        if model_name:
+            self.db.execute(
+                "DELETE FROM model_availability WHERE provider_id=?"
+                " AND model_name=?", (provider_id, model_name))
+            return 1
+        removed = self.db.scalar(
+            "SELECT COUNT(*) FROM model_availability WHERE provider_id=?",
+            (provider_id,))
+        self.db.execute("DELETE FROM model_availability WHERE provider_id=?",
+                        (provider_id,))
+        return removed
+
+
 # --------------------------------------------------------------------- presets
 class PresetRepository(object):
     def __init__(self, db: Database) -> None:

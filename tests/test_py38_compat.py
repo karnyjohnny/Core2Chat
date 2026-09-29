@@ -1,12 +1,15 @@
 """Python 3.8 compatibility guard (specification §1, rules 21-23).
 
-The target runtime is Python 3.8.20 on Windows 7. Development may happen on a
-newer interpreter, so this test statically rejects syntax and stdlib calls that
-would break 3.8 at runtime.
+The target runtime is Python 3.8 on Windows 7 (CI uses 3.8.10, the last 3.8
+release with official python.org binaries; a local unofficial 3.8.20 build also
+works). Development may happen on a newer interpreter, so this test statically
+rejects syntax and stdlib calls that would break 3.8 at runtime.
 """
 
 import ast
+import json
 import os
+import re
 import sys
 from typing import List, Set, Tuple
 
@@ -208,3 +211,91 @@ def test_build_script_scans_working_tree_and_history():
     assert "secret scan (working tree): clean" in result.stdout
     assert "secret scan (git history): clean" in result.stdout
     assert "spec syntax: OK" in result.stdout
+
+
+def test_bundle_trimming_lists_are_consistent():
+    """pyinstaller.spec and build.py must agree on what is dropped.
+
+    If the two lists drift, --verify-dist reports a library as "removed by us"
+    while the spec still ships it (or the other way round), and the check stops
+    being meaningful.
+    """
+    import subprocess
+
+    script = (
+        "import ast, json, sys\n"
+        "src = open('pyinstaller.spec', encoding='utf-8').read()\n"
+        "tree = ast.parse(src)\n"
+        "found = {}\n"
+        "for node in tree.body:\n"
+        "    if isinstance(node, ast.Assign):\n"
+        "        for target in node.targets:\n"
+        "            if isinstance(target, ast.Name):\n"
+        "                try:\n"
+        "                    found[target.id] = ast.literal_eval(node.value)\n"
+        "                except ValueError:\n"
+        "                    pass\n"
+        "print(json.dumps({k: sorted(v) for k, v in found.items()\n"
+        "                  if isinstance(v, tuple)}))\n")
+    completed = subprocess.run([sys.executable, "-c", script],
+                               cwd=PROJECT_ROOT, capture_output=True,
+                               text=True, timeout=120)
+    assert completed.returncode == 0, completed.stderr[-800:]
+    spec_lists = json.loads(completed.stdout)
+
+    assert "UNWANTED_QT_LIBS" in spec_lists
+    assert "UNWANTED_PYQT5_PREFIXES" in spec_lists
+    assert "UNWANTED_QT_PLUGIN_DIRS" in spec_lists
+    assert "UNWANTED_QT_PLUGIN_FILES" in spec_lists
+
+    sys.path.insert(0, PROJECT_ROOT)
+    import importlib
+
+    build_module = importlib.import_module("build")
+    for list_name in ("UNWANTED_QT_LIBS", "UNWANTED_QT_PLUGIN_FILES"):
+        spec_entries = set(spec_lists[list_name])
+        build_entries = set(getattr(build_module, list_name))
+        assert spec_entries == build_entries, (
+            "%s się rozjechała: tylko w spec=%s, tylko w build.py=%s"
+            % (list_name, sorted(spec_entries - build_entries)[:5],
+               sorted(build_entries - spec_entries)[:5]))
+
+
+def test_bundle_keeps_windows_platform_and_icon_plugins():
+    """Na Windows paczka musi zawierać qwindows i qico - bez nich EXE nie wstanie."""
+    spec_text = open(os.path.join(PROJECT_ROOT, "pyinstaller.spec"),
+                     encoding="utf-8").read()
+    dropped_files = re.findall(
+        r"UNWANTED_QT_PLUGIN_FILES = \((.*?)\)", spec_text, re.S)[0]
+    dropped_dirs = re.findall(
+        r"UNWANTED_QT_PLUGIN_DIRS = \((.*?)\)", spec_text, re.S)[0]
+    for required in ("qwindows", "qico", "qjpeg"):
+        assert required not in dropped_files, \
+            "wtyczka %s nie może być usunięta" % required
+    for required in ("platforms", "imageformats", "styles"):
+        assert '"%s"' % required not in dropped_dirs, \
+            "katalog wtyczek %s nie może być usunięty" % required
+
+
+def test_bundle_keeps_the_modules_the_app_actually_imports():
+    """Trimming must not remove anything QtCore/QtGui/QtWidgets needs."""
+    spec_text = open(os.path.join(PROJECT_ROOT, "pyinstaller.spec"),
+                     encoding="utf-8").read()
+    for required in ("QtCore", "QtGui", "QtWidgets"):
+        assert "PyQt5/%s" % required not in spec_text, \
+            "%s zostałby wycięty z paczki" % required
+    # Platformy i formaty obrazów muszą zostać (QIcon, qwindows/qxcb).
+    for kept in ("platforms", "imageformats", "iconengines"):
+        assert '"%s"' % kept not in re.findall(
+            r"UNWANTED_QT_PLUGIN_DIRS = \((.*?)\)", spec_text, re.S)[0], \
+            "katalog wtyczek %s nie może być usunięty" % kept
+
+
+def test_verify_dist_reports_missing_bundle(tmp_path):
+    sys.path.insert(0, PROJECT_ROOT)
+    import importlib
+
+    build_module = importlib.import_module("build")
+    ok, notes = build_module.verify_dist(str(tmp_path / "nope"))
+    assert ok is False
+    assert any("missing" in note for note in notes)

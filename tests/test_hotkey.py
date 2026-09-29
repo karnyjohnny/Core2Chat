@@ -4,7 +4,7 @@ import sys
 
 import pytest
 
-from core.constants import HOTKEY_ID_FOCUS, HOTKEY_ID_QUICK_CHAT
+from core.constants import HOTKEY_ID_ACTIVATE, HOTKEY_ID_FOCUS
 from core.hotkey_manager import (MOD_ALT, MOD_CONTROL, MOD_NOREPEAT, MOD_SHIFT,
                                  MOD_WIN, HotkeyManager, format_hotkey,
                                  parse_hotkey)
@@ -132,11 +132,11 @@ def test_successful_registration_records_the_combo(monkeypatch):
     manager.available = True
     fired = []
     assert manager.register("Win+C", lambda: fired.append(True),
-                            HOTKEY_ID_QUICK_CHAT) is True
-    assert fake.registered == [(HOTKEY_ID_QUICK_CHAT,
+                            HOTKEY_ID_ACTIVATE) is True
+    assert fake.registered == [(HOTKEY_ID_ACTIVATE,
                                 MOD_WIN | MOD_NOREPEAT, 0x43)]
-    assert manager.status()["registered"][HOTKEY_ID_QUICK_CHAT] == "Win+C"
-    manager.unregister(HOTKEY_ID_QUICK_CHAT)
+    assert manager.status()["registered"][HOTKEY_ID_ACTIVATE] == "Win+C"
+    manager.unregister(HOTKEY_ID_ACTIVATE)
     assert manager.status()["registered"] == {}
     manager.shutdown()
 
@@ -148,9 +148,9 @@ def test_dispatch_invokes_callback_and_survives_errors(monkeypatch):
         raise RuntimeError("callback failure")
 
     fired = []
-    manager._callbacks[HOTKEY_ID_QUICK_CHAT] = lambda: fired.append(1)
+    manager._callbacks[HOTKEY_ID_ACTIVATE] = lambda: fired.append(1)
     manager._callbacks[HOTKEY_ID_FOCUS] = boom
-    manager._dispatch(HOTKEY_ID_QUICK_CHAT)
+    manager._dispatch(HOTKEY_ID_ACTIVATE)
     manager._dispatch(HOTKEY_ID_FOCUS)          # must not propagate
     manager._dispatch(99999)                    # unknown id is ignored
     assert fired == [1]

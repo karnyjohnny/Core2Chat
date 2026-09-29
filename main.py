@@ -13,7 +13,7 @@ import time
 from typing import Any, Dict, List, Optional
 
 from core.constants import (APP_NAME, APP_ORGANIZATION, APP_VERSION,
-                            HOTKEY_ID_QUICK_CHAT)
+                            HOTKEY_ID_ACTIVATE)
 from core.logging_setup import get_logger
 from services.app_context import AppContext
 
@@ -26,8 +26,8 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
                         help="tryb przenośny (dane obok programu)")
     parser.add_argument("--data-dir", default="",
                         help="własny katalog danych (nadpisuje wykrywanie)")
-    parser.add_argument("--quick-chat", action="store_true",
-                        help="uruchom i natychmiast pokaż szybki czat")
+    parser.add_argument("--focus-input", action="store_true",
+                        help="uruchom i natychmiast ustaw fokus na pole wpisywania")
     parser.add_argument("--new-chat", action="store_true",
                         help="uruchom z nową rozmową")
     parser.add_argument("--diagnostics", action="store_true",
@@ -55,12 +55,13 @@ class Application(object):
         self.context: Optional[AppContext] = None
         self.app = None
         self.window = None
-        self.quick_chat = None
         self.tray = None
         self.hotkey = None
         self.guard = None
         self.chat_service = None
         self.session_service = None
+        self._snapshot_len = 0
+        self._snapshot_applied = False
         self.log = get_logger("app")
 
     # ------------------------------------------------------------- lifecycle
@@ -119,23 +120,22 @@ class Application(object):
 
     def _initialize_ui(self) -> None:
         from gui.main_window import MainWindow
-        from gui.theme import build_stylesheet, validate_color
+        from gui.theme import apply_theme, validate_color
 
         assert self.context is not None
         settings = self.context.settings
-        self.app.setStyleSheet(build_stylesheet(
-            dark=settings.dark_theme,
-            accent=validate_color(settings.accent_color),
-            font_size=settings.font_size,
-            code_font_size=settings.code_font_size))
+        apply_theme(self.app,
+                    dark=settings.dark_theme,
+                    accent=validate_color(settings.accent_color),
+                    font_size=settings.font_size,
+                    code_font_size=settings.code_font_size)
         self.window = MainWindow(self.context, self.chat_service,
                                  self.session_service, self.export_service,
                                  self.import_service)
-        self.window.quick_chat_requested.connect(self.toggle_quick_chat)
         self.window.shutdown_requested.connect(self.shutdown)
         snapshot = self.context.app_settings_repo.get("ui.window_state")
-        if snapshot:
-            self.window.apply_window_state(snapshot)
+        self._snapshot_len = len(snapshot or "")
+        self._snapshot_applied = self.window.apply_window_state(snapshot)
 
         self.window.reload_sidebar()
         if self.args.new_chat or not self._restore_last_session():
@@ -147,15 +147,14 @@ class Application(object):
         self._schedule_housekeeping()
 
     def _restore_last_session(self) -> bool:
+        """Reopen the conversation the user left, across process restarts."""
         assert self.context is not None
-        last_id = self.context.settings.last_session_id
-        if not last_id:
-            return False
-        session = self.session_service.get(int(last_id))
+        session = self.session_service.active_session()
         if session is None:
             return False
         self.window.open_session(int(session.id))
         self.window.sidebar.select_session(int(session.id))
+        self.log.info("app.session_restored id=%s", session.id)
         return True
 
     def _initialize_tray(self) -> None:
@@ -166,9 +165,8 @@ class Application(object):
         self.tray = TrayManager(self.window)
         self.tray.build(
             on_show=self.window.restore_from_tray,
-            on_new_chat=lambda: (self.window.restore_from_tray(),
-                                 self.window.new_chat()),
-            on_quick_chat=self.toggle_quick_chat,
+            on_new_chat=self.new_chat_from_tray,
+            on_new_chat_focused=self.focus_main_input,
             on_settings=self.window.show_settings,
             on_exit=self.shutdown,
             on_toggle_pause=self._on_pause_toggled)
@@ -181,9 +179,9 @@ class Application(object):
         from core.hotkey_manager import HotkeyManager
 
         self.hotkey = HotkeyManager()
-        combo = self.context.settings.quick_chat_hotkey
-        ok = self.hotkey.register(combo, self.toggle_quick_chat,
-                                  HOTKEY_ID_QUICK_CHAT)
+        combo = self.context.settings.activation_hotkey
+        ok = self.hotkey.register(combo, self.show_and_focus_main,
+                                  HOTKEY_ID_ACTIVATE)
         if not ok and self.window is not None:
             self.window.statusBar().showMessage(self.hotkey.last_error, 8000)
             self.log.warning("app.hotkey_failed combo=%s err=%s", combo,
@@ -221,7 +219,7 @@ class Application(object):
         primary = self.guard.acquire(handler=self._on_forwarded_command)
         if primary:
             return True
-        command = "open-quick-chat" if self.args.quick_chat else "show"
+        command = "focus-input" if self.args.focus_input else "show"
         forwarded = self.guard.forward_command(command)
         self.log.info("app.second_instance forwarded=%s ok=%s", command,
                       forwarded)
@@ -231,29 +229,38 @@ class Application(object):
         from PyQt5.QtCore import QTimer
 
         name = command.split(" ", 1)[0]
-        if name in ("open-quick-chat", "quick-chat"):
-            QTimer.singleShot(0, self.toggle_quick_chat)
+        if name in ("focus-input", "new-chat-focused"):
+            QTimer.singleShot(0, self.focus_main_input)
         elif name == "new-chat":
             QTimer.singleShot(0, lambda: (self.window.restore_from_tray(),
                                           self.window.new_chat()))
         else:
             QTimer.singleShot(0, self.window.restore_from_tray)
 
-    # ------------------------------------------------------------- quick chat
-    def toggle_quick_chat(self) -> None:
-        if self.quick_chat is None:
-            from gui.quick_chat import QuickChatWindow
-
-            self.quick_chat = QuickChatWindow(self.context, self.chat_service,
-                                              self.session_service)
-            self.quick_chat.open_main_requested.connect(self._open_in_main)
-        self.quick_chat.show_window()
-
-    def _open_in_main(self, session_id: int) -> None:
+    # ------------------------------------------------------------- tray actions
+    def new_chat_from_tray(self) -> None:
+        """Bound method (not a lambda) so no reference cycle is created."""
+        if self.window is None:
+            return
         self.window.restore_from_tray()
-        self.window.open_session(session_id)
-        self.window.reload_sidebar()
-        self.window.sidebar.select_session(session_id)
+        self.window.new_chat()
+
+    # ------------------------------------------------------- global activation
+    def show_and_focus_main(self) -> None:
+        """Global hotkey target: bring the main window up and focus the prompt.
+
+        This replaces the former Quick Chat popup. Rationale (task §5.1): a
+        second top-level window duplicated the composer, owned its own focus and
+        Esc handling, and was the main source of tray/lifecycle instability,
+        while the main window is already light enough to serve the same purpose.
+        """
+        if self.window is None:
+            return
+        self.window.restore_from_tray()
+        self.window.focus_input()
+
+    def focus_main_input(self) -> None:
+        self.show_and_focus_main()
 
     def _on_pause_toggled(self, paused: bool) -> None:
         """Paused mode blocks new requests without tearing down sockets."""
@@ -261,10 +268,16 @@ class Application(object):
         self.context.app_settings_repo.set("network.paused",
                                            "1" if paused else "0")
         if self.window is not None:
-            self.window.set_connection("offline" if paused else "online")
-            self.window._status_session.setText(
-                "Aktywność sieciowa wstrzymana." if paused
-                else "Aktywność sieciowa wznowiona.")
+            from services.app_status import PAUSED
+            if paused:
+                self.window.status.set(PAUSED, "wstrzymano z zasobnika",
+                                       force=True)
+                self.window._status_session.setText(
+                    "Aktywność sieciowa wstrzymana.")
+            else:
+                self.window.status.clear_sticky()
+                self.window._status_session.setText(
+                    "Aktywność sieciowa wznowiona.")
         self.log.info("app.network_paused value=%s", paused)
 
     # --------------------------------------------------------------- shutdown
@@ -277,13 +290,12 @@ class Application(object):
                 state = self.window.window_state_snapshot()
                 self.context.app_settings_repo.set("ui.window_state", state)
                 if self.window._session is not None:
-                    self.context.settings.last_session_id = int(
-                        self.window._session.id or 0)
+                    self.session_service.remember_active(
+                        int(self.window._session.id or 0))
                 self.chat_service.cancel_all()
         except Exception as exc:  # pragma: no cover
             self.log.warning("app.shutdown_state_failed err=%s", exc)
-        for closer in (lambda: self.quick_chat.close() if self.quick_chat else None,
-                       lambda: self.hotkey.shutdown() if self.hotkey else None,
+        for closer in (lambda: self.hotkey.shutdown() if self.hotkey else None,
                        lambda: self.tray.shutdown() if self.tray else None,
                        lambda: self.guard.release() if self.guard else None,
                        lambda: self.context.shutdown()):
@@ -301,9 +313,9 @@ class Application(object):
         code = self.initialize()
         if code != 0 or self.app is None:
             return code
-        if self.args.quick_chat:
+        if self.args.focus_input:
             from PyQt5.QtCore import QTimer
-            QTimer.singleShot(0, self.toggle_quick_chat)
+            QTimer.singleShot(0, self.focus_main_input)
         if self.args.smoke_test > 0:
             return self._run_smoke_test(self.args.smoke_test)
         self.app.aboutToQuit.connect(lambda: self.shutdown())
@@ -331,6 +343,9 @@ class Application(object):
                 self.window.chat_widget.set_session(session.id)
                 self.window.refresh_models(force=False)
                 self.app.processEvents()
+                report["snapshot_len"] = getattr(self, "_snapshot_len", 0)
+                report["snapshot_applied"] = getattr(self, "_snapshot_applied",
+                                                      False)
                 report["sessions"] = self.context.sessions.count()
                 report["startup_ms"] = round(self.timings.get("total_ms", 0.0), 1)
                 report["db_journal"] = self.context.db.journal_mode

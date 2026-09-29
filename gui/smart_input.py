@@ -15,6 +15,9 @@ from PyQt5.QtCore import Qt, QTimer, pyqtSignal
 from PyQt5.QtGui import QImage, QTextCursor
 from PyQt5.QtWidgets import QApplication, QTextEdit, QWidget
 
+from gui.input_policy import (CLEAR_OR_PROPAGATE, INSERT, NEWLINE, PROPAGATE,
+                              SUBMIT, SubmitPolicy)
+
 DRAFT_DEBOUNCE_MS = 600
 MAX_HEIGHT_LINES = 10
 MIN_HEIGHT_PX = 34
@@ -43,7 +46,8 @@ class SmartInput(QTextEdit):
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.setLineWrapMode(QTextEdit.WidgetWidth)
         self.setMinimumHeight(MIN_HEIGHT_PX)
-        self._ctrl_enter_sends = bool(ctrl_enter_sends)
+        # One shared keyboard policy for every composer in the app.
+        self.policy = SubmitPolicy(ctrl_enter_sends)
         self._max_height = MIN_HEIGHT_PX
         self._draft_timer = QTimer(self)
         self._draft_timer.setSingleShot(True)
@@ -56,7 +60,8 @@ class SmartInput(QTextEdit):
 
     # ------------------------------------------------------------- settings
     def set_ctrl_enter_sends(self, enabled: bool) -> None:
-        self._ctrl_enter_sends = bool(enabled)
+        self.policy.set_ctrl_enter_sends(enabled)
+        self.setPlaceholderText("Napisz wiadomość… (%s)" % self.policy.describe())
 
     # ---------------------------------------------------------------- sizing
     def _recalculate_max_height(self) -> None:
@@ -81,40 +86,42 @@ class SmartInput(QTextEdit):
 
     # ----------------------------------------------------------------- input
     def keyPressEvent(self, event) -> None:  # noqa: N802 (Qt naming)
-        # Never intercept a keystroke that belongs to an IME composition.
+        # An IME composition must never be interpreted as a submit.
         if self._is_composing(event):
             super(SmartInput, self).keyPressEvent(event)
             return
-        key = event.key()
-        modifiers = event.modifiers()
-        if key in (Qt.Key_Return, Qt.Key_Enter):
-            send = (modifiers & Qt.ShiftModifier) == 0
-            if self._ctrl_enter_sends:
-                send = bool(modifiers & Qt.ControlModifier)
-            if send:
-                self.request_send()
-                event.accept()
-                return
-            super(SmartInput, self).keyPressEvent(event)
-            self._adjust_height()
+        action = self.policy.decide(event.key(), event.modifiers())
+        if action == SUBMIT:
+            self.request_send()
+            event.accept()
             return
-        if key == Qt.Key_Escape:
-            # Esc clears the composer only when a draft exists; otherwise it is
-            # forwarded so dialogs/quick-chat can close.
+        if action == NEWLINE:
+            # Insert the line break ourselves: QTextEdit would otherwise apply
+            # its own (widget-dependent) handling of the same key.
+            self.insertPlainText("\n")
+            self._adjust_height()
+            event.accept()
+            return
+        if action == CLEAR_OR_PROPAGATE:
             if self.toPlainText().strip():
                 self.clear_text()
                 event.accept()
                 return
+            event.ignore()          # let the window close dialogs / hide
+            return
+        if action == PROPAGATE:     # pragma: no cover - reserved
+            event.ignore()
+            return
         super(SmartInput, self).keyPressEvent(event)
         self._adjust_height()
 
     @staticmethod
     def _is_composing(event) -> bool:
-        """True while an IME preedit is active.
+        """True while an input-method preedit is active.
 
-        Two signals are used because Qt exposes this differently per platform:
-        ``QInputMethodEvent.composing`` on input-method events, and an empty
-        ``text()`` on key events that only update the preedit buffer.
+        Qt delivers ``QInputMethodEvent`` with a non-empty preedit string during
+        composition; key events in that window carry no usable text. Both are
+        checked so Enter confirming an IME candidate never sends a message.
         """
         try:
             from PyQt5.QtGui import QInputMethodEvent
@@ -122,15 +129,16 @@ class SmartInput(QTextEdit):
                 return bool(event.preeditString())
         except ImportError:  # pragma: no cover
             pass
-        query = getattr(QApplication, "inputMethod", None)
-        if query is not None:
-            try:
-                state = QApplication.inputMethod()
-                if state is not None and state.isVisible() \
-                        and not event.text():
+        try:
+            if event.text() == "" and event.key() not in (
+                    Qt.Key_Return, Qt.Key_Enter, Qt.Key_Backspace,
+                    Qt.Key_Delete, Qt.Key_Escape, Qt.Key_Shift, Qt.Key_Control,
+                    Qt.Key_Alt, Qt.Key_Meta, Qt.Key_CapsLock):
+                method = QApplication.inputMethod()
+                if method is not None and method.isVisible():
                     return True
-            except Exception:
-                pass
+        except Exception:
+            return False
         return False
 
     def insertFromMimeData(self, source) -> None:  # noqa: N802 (Qt naming)
@@ -196,8 +204,15 @@ class SmartInput(QTextEdit):
         return self.toPlainText()
 
     def set_text(self, text: str, mark_clean: bool = True) -> None:
+        """Replace the content and put the caret at the end.
+
+        ``setPlainText`` alone leaves the cursor at position 0, so the next
+        Shift+Enter (or any typing) inserted text *before* the restored draft -
+        which is what a user sees as "the editor is broken".
+        """
         self._suppress_draft_signal = bool(mark_clean)
         self.setPlainText(text or "")
+        self.moveCursor(QTextCursor.End)
         self._suppress_draft_signal = False
         self._adjust_height()
         if mark_clean:

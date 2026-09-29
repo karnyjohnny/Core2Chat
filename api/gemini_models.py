@@ -63,15 +63,18 @@ class ModelDiscovery(object):
                  cache: Optional[ModelCacheRepository] = None,
                  provider_id: str = "gemini",
                  api_version: str = GEMINI_API_VERSION,
-                 ttl_seconds: int = 900) -> None:
+                 ttl_seconds: int = 900,
+                 availability: Optional[Any] = None) -> None:
         self.client = client
         self.cache = cache
         self.provider_id = provider_id
         self.api_version = api_version
         self.ttl_seconds = int(ttl_seconds)
+        self.availability = availability
         self._memory: List[ModelInfo] = []
         self._fetched_at = 0.0
         self._unavailable: Dict[str, str] = {}
+        self._loaded_availability = False
         self.last_error = ""
 
     # ---------------------------------------------------------------- fetch
@@ -109,13 +112,35 @@ class ModelDiscovery(object):
         return models
 
     # ---------------------------------------------------------------- reads
+    def _load_durable_availability(self) -> None:
+        """Merge facts learned in previous runs (survives restarts)."""
+        if self._loaded_availability or self.availability is None:
+            return
+        self._loaded_availability = True
+        try:
+            stored = self.availability.unavailable(self.provider_id)
+        except Exception as exc:  # pragma: no cover - defensive
+            log.warning("models.availability_read_failed err=%s", exc)
+            return
+        for model_id, reason in stored.items():
+            self._unavailable.setdefault(model_id, reason or "unavailable")
+        if stored:
+            log.info("models.availability_loaded count=%d", len(stored))
+
     def list_models(self, force_refresh: bool = False,
                     include_legacy: bool = False,
                     include_preview: bool = True,
                     chat_only: bool = True,
                     hidden: Optional[List[str]] = None,
-                    offline: bool = False) -> List[ModelInfo]:
-        """Return the filtered catalogue, using cache when still fresh."""
+                    hide_unavailable: bool = True,
+                    offline: bool = False) -> List[ModelInfo]:  # noqa: C901
+        """Return the filtered catalogue, using cache when still fresh.
+
+        ``hide_unavailable`` implements the MODEL DISCOVERY -> AVAILABILITY ->
+        FILTER -> UI chain: models proven unusable for this credential are
+        dropped from the selector instead of failing at send time.
+        """
+        self._load_durable_availability()
         if offline:
             models = self._from_cache()
         elif force_refresh or not self._memory_fresh():
@@ -129,12 +154,20 @@ class ModelDiscovery(object):
             models = list(self._memory)
         if not models:
             models = self._from_cache()
-        # Runtime-proven unavailability always wins over the catalogue.
+        # Runtime-proven unavailability always wins over the catalogue: it is
+        # marked in one place so both the filter and the UI see the same fact.
         if self._unavailable:
-            models = [m for m in models if m.model_id not in self._unavailable]
+            for model in models:
+                if model.model_id in self._unavailable:
+                    model.lifecycle = ModelLifecycle.SHUT_DOWN
+            if hide_unavailable:
+                models = [m for m in models
+                          if m.model_id not in self._unavailable]
         filtered = caps.filter_models(models, include_legacy=include_legacy,
                                       include_preview=include_preview,
-                                      chat_only=chat_only, hidden=hidden)
+                                      chat_only=chat_only,
+                                      include_unavailable=not hide_unavailable,
+                                      hidden=hidden)
         # Merge cached probe results so capabilities survive restarts.
         return filtered
 
@@ -146,20 +179,76 @@ class ModelDiscovery(object):
         return None
 
     def all_models(self) -> List[ModelInfo]:
-        return list(self._memory or self._from_cache())
+        """Raw catalogue (no filtering) with availability labels applied.
+
+        Callers that bypass :meth:`list_models` - diagnostics, the settings
+        dialog - must still see the learned lifecycle, otherwise the two paths
+        disagree about which models exist.
+        """
+        self._load_durable_availability()
+        models = list(self._memory or self._from_cache())
+        if self._unavailable:
+            for model in models:
+                if model.model_id in self._unavailable:
+                    model.lifecycle = ModelLifecycle.SHUT_DOWN
+        return models
 
     def cached_models(self) -> List[ModelInfo]:
         return self._from_cache()
 
     # ------------------------------------------------------- runtime updates
-    def mark_unavailable(self, model_id: str, reason: str = "") -> None:
+    def mark_unavailable(self, model_id: str, reason: str = "",
+                         http_status: int = 0) -> None:
         """Record evidence that a model no longer serves requests."""
         self._unavailable[model_id] = reason or "unavailable"
-        log.warning("models.marked_unavailable id=%s reason=%s", model_id,
-                    reason[:80])
+        if self.availability is not None:
+            try:
+                self.availability.mark(self.provider_id, model_id, False,
+                                       reason or "unavailable", http_status)
+            except Exception as exc:  # pragma: no cover - defensive
+                log.warning("models.availability_write_failed err=%s", exc)
+        log.warning("models.marked_unavailable id=%s status=%d reason=%s",
+                    model_id, http_status, reason[:80])
 
-    def clear_unavailable(self) -> None:
-        self._unavailable.clear()
+    def mark_available(self, model_id: str) -> None:
+        """A successful request proves the model works again.
+
+        The in-memory label written by an earlier listing must be reverted too,
+        otherwise the selector would keep hiding a model that just answered.
+        """
+        changed = self._unavailable.pop(model_id, None) is not None
+        for model in self._memory:
+            if model.model_id == model_id and \
+                    model.lifecycle == ModelLifecycle.SHUT_DOWN:
+                model.lifecycle = caps.classify_lifecycle(model)
+                changed = True
+        if self.availability is not None:
+            try:
+                self.availability.mark(self.provider_id, model_id, True, "",
+                                       200, "response")
+            except Exception:  # pragma: no cover - defensive
+                pass
+        if changed:
+            log.info("models.marked_available id=%s", model_id)
+
+    def clear_unavailable(self, model_id: Optional[str] = None) -> int:
+        """Forget learned unavailability (returns how many entries dropped).
+
+        The in-memory catalogue is refreshed too, otherwise the shut_down
+        label written during a previous listing would survive the reset.
+        """
+        if model_id:
+            removed = 1 if self._unavailable.pop(model_id, None) else 0
+        else:
+            removed = len(self._unavailable)
+            self._unavailable.clear()
+        if removed:
+            self._fetched_at = 0.0      # force a re-fetch on the next listing
+        return removed
+
+    def unavailable_models(self) -> Dict[str, str]:
+        self._load_durable_availability()
+        return dict(self._unavailable)
 
     def apply_probed_capabilities(self, model_id: str,
                                   probed: Dict[str, bool]) -> None:

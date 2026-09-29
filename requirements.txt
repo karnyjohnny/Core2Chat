@@ -1,5 +1,8 @@
 # Core2Chat — runtime dependencies
-# Target: Python 3.8.20, Windows 7 and newer, x86/x64.
+# Target: Python 3.8.x, Windows 7 and newer, x86/x64.
+# CI uses 3.8.10 - the last 3.8 release with official python.org binaries
+# (3.8.11+ are source-only, so actions/setup-python cannot install them).
+# A local unofficial 3.8.20 build works too: the code targets 3.8 syntax.
 # Dependency policy (spec §68): keep the runtime footprint minimal.
 #   * PyQt5 is the GUI toolkit (QtWebEngine/PySide/PyQt6 are forbidden).
 #   * httpx is the only HTTP stack; it is imported lazily so an idle app that

@@ -75,6 +75,38 @@ class SessionService(object):
     def touch(self, session_id: int) -> None:
         self.context.sessions.touch(int(session_id))
 
+    # ------------------------------------------------------------ active chat
+    def remember_active(self, session_id: Optional[int]) -> None:
+        """Persist which conversation should reopen on the next launch."""
+        self.context.settings.last_session_id = (int(session_id)
+                                                 if session_id else None)
+        self.context.app_settings_repo.set(
+            "app.last_session_id", int(session_id) if session_id else 0)
+
+    def active_session_id(self) -> Optional[int]:
+        """Last active conversation.
+
+        The database is the authoritative source: it is written on every
+        activation and survives an unclean shutdown, whereas ``config.json`` is
+        only saved during a clean ``shutdown()``. The settings value is kept in
+        sync and used as a fallback for databases created before the mirror
+        existed.
+        """
+        value = self.context.app_settings_repo.get_int("app.last_session_id", 0)
+        if not value:
+            value = self.context.settings.last_session_id or 0
+        return int(value) if value else None
+
+    def active_session(self):
+        session_id = self.active_session_id()
+        if not session_id:
+            return None
+        session = self.get(int(session_id))
+        if session is None:
+            # A stale pointer must not break startup.
+            self.remember_active(None)
+        return session
+
     def ensure_title(self, session: Session, first_user_text: str) -> bool:
         """Name a fresh session after its first message (never overwrite)."""
         if session.title and session.title != "Nowa rozmowa":

@@ -170,9 +170,27 @@ SCHEMA_V1: Tuple[str, ...] = (
     """,
 )
 
+SCHEMA_V2: Tuple[str, ...] = (
+    """
+    CREATE TABLE IF NOT EXISTS model_availability (
+        provider_id  TEXT NOT NULL DEFAULT 'gemini',
+        model_name   TEXT NOT NULL DEFAULT '',
+        available    INTEGER NOT NULL DEFAULT 1,
+        reason       TEXT NOT NULL DEFAULT '',
+        http_status  INTEGER NOT NULL DEFAULT 0,
+        verified_at  INTEGER NOT NULL DEFAULT 0,
+        source       TEXT NOT NULL DEFAULT 'error',
+        PRIMARY KEY (provider_id, model_name)
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_model_availability "
+    "ON model_availability(provider_id, available)",
+)
+
 # Ordered list of (version, statements). New versions are appended here.
 MIGRATIONS: List[Tuple[int, Tuple[str, ...]]] = [
     (1, SCHEMA_V1),
+    (2, SCHEMA_V2),
 ]
 
 BUILTIN_PRESETS: Tuple[Tuple[str, str], ...] = (

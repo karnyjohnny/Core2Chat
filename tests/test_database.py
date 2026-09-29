@@ -49,16 +49,57 @@ def test_migrations_are_idempotent(temp_db):
 
 
 def test_migration_upgrade_path_from_scratch(tmp_path):
+    from core.constants import DB_SCHEMA_VERSION
+
     path = str(tmp_path / "fresh.sqlite3")
     db = Database(path)
     db.initialize()
-    assert db.applied_migrations == [1]
+    assert db.applied_migrations == list(range(1, DB_SCHEMA_VERSION + 1))
     db.close_all()
     db2 = Database(path)
     db2.initialize()
     assert db2.applied_migrations == []          # already migrated
-    assert db2.schema_version == 1
+    assert db2.schema_version == DB_SCHEMA_VERSION
     db2.close_all()
+
+
+def test_upgrade_from_version_1_keeps_user_data(tmp_path):
+    """§9: an upgrade must migrate, never recreate or wipe the database."""
+    import sqlite3 as _sqlite3
+
+    from core.constants import DB_SCHEMA_VERSION
+    from db.migrations import SCHEMA_V1, set_user_version
+
+    path = str(tmp_path / "v1.sqlite3")
+    legacy = _sqlite3.connect(path)
+    for statement in SCHEMA_V1:
+        legacy.execute(statement)
+    set_user_version(legacy, 1)
+    legacy.execute("INSERT INTO sessions(title, created_at, updated_at)"
+                   " VALUES('stara rozmowa', 1, 1)")
+    legacy.execute("INSERT INTO messages(session_id, role, content_text,"
+                   " timestamp) VALUES(1, 'user', 'treść z v1', 1)")
+    legacy.commit()
+    legacy.close()
+
+    db = Database(path)
+    db.initialize()
+    try:
+        assert db.schema_version == DB_SCHEMA_VERSION
+        assert db.applied_migrations == list(range(2, DB_SCHEMA_VERSION + 1))
+        # Old data survived the upgrade.
+        assert db.scalar("SELECT COUNT(*) FROM sessions") == 1
+        assert db.scalar("SELECT COUNT(*) FROM messages") == 1
+        assert db.query_one("SELECT title FROM sessions")["title"] == \
+            "stara rozmowa"
+        # The new table exists and is usable.
+        from db.repositories import ModelAvailabilityRepository
+        repo = ModelAvailabilityRepository(db)
+        repo.mark("gemini", "model-x", False, "404", 404)
+        assert repo.unavailable("gemini") == {"model-x": "404"}
+        assert db.integrity_check() == "ok"
+    finally:
+        db.close_all()
 
 
 def test_integrity_check_ok(temp_db):

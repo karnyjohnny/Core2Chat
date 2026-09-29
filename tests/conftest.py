@@ -33,6 +33,33 @@ def temp_db(tmp_path):
 
 
 @pytest.fixture
+def qt_pump(qapp):
+    """Deterministic event pumping for widget-lifecycle tests.
+
+    ``processEvents()`` alone does **not** run deferred deletions, so a window
+    closed with ``WA_DeleteOnClose`` looks alive in a test even though the real
+    application (which runs ``exec_()``) destroys it. Verified on PyQt5 5.15:
+    ``sendPostedEvents(None, QEvent.DeferredDelete)`` is what makes the
+    destruction observable without an event loop.
+    """
+    import gc
+    import time as _time
+
+    from PyQt5.QtCore import QEvent
+
+    def pump(milliseconds: int = 60) -> None:
+        deadline = _time.monotonic() + milliseconds / 1000.0
+        while _time.monotonic() < deadline:
+            qapp.processEvents()
+            _time.sleep(0.005)
+        qapp.sendPostedEvents(None, QEvent.DeferredDelete)
+        gc.collect()
+        qapp.processEvents()
+
+    return pump
+
+
+@pytest.fixture
 def live_credentials():
     """Opt-in live credentials; skips the test when unavailable."""
     if os.environ.get("CORE2CHAT_LIVE_TEST") != "1":

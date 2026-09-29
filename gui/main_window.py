@@ -27,7 +27,7 @@ from gui.chat_widget import ChatWidget
 from gui.model_selector import ModelSelector
 from gui.sidebar import Sidebar
 from gui.smart_input import SmartInput
-from gui.theme import build_stylesheet, repolish, validate_color
+from gui.theme import apply_theme, repolish, validate_color
 from gui.widgets.context_meter import ContextMeter
 from gui.widgets.status_pill import StatusPill
 from models.attachment_models import Attachment, AttachmentStatus
@@ -35,6 +35,10 @@ from models.chat_models import (ConnectionState, ContextInfo,
                                 GenerationState, Session)
 from models.message_models import Message, MessageStatus, Role
 from models.provider_models import ProviderError
+from services.app_status import (CANCELLED, CONNECTING, ERROR, IDLE, OFFLINE,
+                                 PAUSED, SENDING, STREAMING, SUCCESS, AppStatus,
+                                 status_from_connectivity,
+                                 status_from_provider_error)
 from utils.markdown import MarkdownRenderer
 from utils.text import format_tokens
 
@@ -48,7 +52,6 @@ RETRY_LABEL = "Ponów"
 class MainWindow(QMainWindow):
     """The application's primary window."""
 
-    quick_chat_requested = pyqtSignal()
     shutdown_requested = pyqtSignal()
 
     def __init__(self, context: Any, chat_service: Any, session_service: Any,
@@ -73,12 +76,19 @@ class MainWindow(QMainWindow):
         self._history_total = 0
         self._history_oldest: Optional[int] = None
         self._generation_started_at = 0.0
+        # Single source of truth for what the user sees in the status pill.
+        self.status = AppStatus(scheduler=self._schedule_once)
+        self.status.add_listener(self._on_status_changed)
         self._elapsed_timer = QTimer(self)
         self._elapsed_timer.setInterval(1000)
         self._elapsed_timer.timeout.connect(self._tick_elapsed)
         self._suppress_send = False
         self._busy_states: Dict[int, str] = {}
 
+        # Closing the window must really destroy it: without this every
+        # close/open cycle leaks a full widget tree (~3.6 MB measured) and the
+        # Nth launch gets progressively slower.
+        self.setAttribute(Qt.WA_DeleteOnClose, True)
         self._build_actions()
         self._build_ui()
         self._connect_services()
@@ -244,11 +254,6 @@ class MainWindow(QMainWindow):
         self.action_about = action("Diagnostyka", self.show_about)
         self.action_export = action("Eksportuj rozmowę…", self.export_session)
         self.action_import = action("Importuj rozmowę…", self.import_session)
-        self.action_quick_chat = action("Szybki czat", self._emit_quick_chat,
-                                        self.settings.quick_chat_hotkey
-                                        if _is_qt_sequence(
-                                            self.settings.quick_chat_hotkey)
-                                        else "")
         self.action_stop = action("Zatrzymaj generowanie", self.stop_generation,
                                   "Esc")
         self.action_refresh_models = action("Odśwież modele",
@@ -258,12 +263,13 @@ class MainWindow(QMainWindow):
     def apply_settings(self) -> None:
         settings = self.context.settings
         self.settings = settings
-        stylesheet = build_stylesheet(
-            dark=settings.dark_theme,
-            accent=validate_color(settings.accent_color),
-            font_size=settings.font_size,
-            code_font_size=settings.code_font_size)
-        QApplication.instance().setStyleSheet(stylesheet)
+        # Palette *and* stylesheet from the same tokens: a stylesheet alone
+        # leaves palette-driven areas (e.g. alternate table rows) unreadable.
+        apply_theme(QApplication.instance(),
+                    dark=settings.dark_theme,
+                    accent=validate_color(settings.accent_color),
+                    font_size=settings.font_size,
+                    code_font_size=settings.code_font_size)
         self.chat_widget.set_show_thinking(settings.show_thinking)
         self.chat_widget.set_spacing(settings.message_spacing == "compact")
         self.chat_widget.set_auto_scroll(settings.auto_scroll)
@@ -307,6 +313,7 @@ class MainWindow(QMainWindow):
 
     def _activate_session(self, session: Session) -> None:
         self._session = session
+        self.sessions.remember_active(int(session.id or 0))
         self.setWindowTitle("%s — %s %s" % (session.title or "Nowa rozmowa",
                                             APP_NAME, APP_VERSION))
         self._title_label.setText(session.title or "Nowa rozmowa")
@@ -586,7 +593,11 @@ class MainWindow(QMainWindow):
         if status == MessageStatus.FAILED:
             self._last_failed_message_id = message_id
         self._status_session.setText("Odpowiedź: %s" % _status_text(status))
-        self.sidebar.upsert_session(self._session) if self._session else None
+        if status == MessageStatus.COMPLETED:
+            self._update_generation_ui(GenerationState.COMPLETED)
+        if self._session is not None:
+            self.sidebar.upsert_session(self._session)
+            self.sessions.remember_active(int(self._session.id or 0))
 
     def _on_generation_failed(self, session_id: int, message_id: int,
                               error: ProviderError, request_id: str) -> None:
@@ -600,6 +611,7 @@ class MainWindow(QMainWindow):
             widget.update_message(widget.message)
         self._last_failed_message_id = message_id
         self._status_session.setText(error.message_user)
+        self._update_generation_ui(GenerationState.FAILED, error.message_user)
         QMessageBox.warning(self, "Błąd API", _error_dialog_text(error))
 
     def _on_generation_cancelled(self, session_id: int, message_id: int,
@@ -607,6 +619,7 @@ class MainWindow(QMainWindow):
         if not self._owns(session_id):
             return
         self.chat_widget.end_stream(message_id, MessageStatus.CANCELLED)
+        self._update_generation_ui(GenerationState.CANCELLED)
         widget = self.chat_widget.widget_for(message_id)
         if widget is not None:
             widget.message.status = MessageStatus.CANCELLED
@@ -640,18 +653,23 @@ class MainWindow(QMainWindow):
             self.model_selector.set_models(models, self.settings.model_id)
             self.model_selector.set_busy(False)
             self._status_counts.setText("modeli: %d" % len(models))
-            self.set_connection(ConnectionState.ONLINE if models
-                                else ConnectionState.ERROR)
+            if models:
+                # A successful discovery proves connectivity: clear OFFLINE /
+                # AUTH_REQUIRED instead of leaving a stale "error" impression.
+                self.status.clear_sticky()
+                self.set_connection(ConnectionState.ONLINE)
+            else:
+                self.status.set(ERROR, "Lista modeli jest pusta.", force=True)
         elif kind == "api.validate":
-            state = {"online": ConnectionState.ONLINE,
-                     "offline": ConnectionState.OFFLINE,
-                     "auth_failed": ConnectionState.AUTH_FAILED,
-                     "rate_limited": ConnectionState.RATE_LIMITED,
-                     "no_key": ConnectionState.OFFLINE}.get(
-                         str(payload), ConnectionState.ERROR)
-            self.set_connection(state)
-            if state != ConnectionState.ONLINE:
-                self._status_session.setText(_connection_hint(state))
+            connectivity = {"online": ConnectionState.ONLINE,
+                            "offline": ConnectionState.OFFLINE,
+                            "auth_failed": ConnectionState.AUTH_FAILED,
+                            "rate_limited": ConnectionState.RATE_LIMITED,
+                            "no_key": ConnectionState.OFFLINE}.get(
+                                str(payload), ConnectionState.ERROR)
+            self.set_connection(connectivity)
+            if connectivity != ConnectionState.ONLINE:
+                self._status_session.setText(_connection_hint(connectivity))
 
     def _on_task_failed(self, kind: str, request_id: str,
                         error: ProviderError) -> None:
@@ -661,19 +679,47 @@ class MainWindow(QMainWindow):
             self.model_selector.set_error(error.message_user)
 
     def _apply_connection_error(self, error: ProviderError) -> None:
-        if error.category == "NETWORK":
-            self.set_connection(ConnectionState.OFFLINE)
-        elif error.category == "AUTHENTICATION":
-            self.set_connection(ConnectionState.AUTH_FAILED)
-        elif error.category == "RATE_LIMIT":
-            self.set_connection(ConnectionState.RATE_LIMITED)
-        elif error.category == "CANCELLED":
+        """Map a provider error onto the status machine (task §7).
+
+        The UI must recover: transient states return to "Gotowy" on their own,
+        sticky ones stay only while the environment really is broken.
+        """
+        state, detail = status_from_provider_error(error.category,
+                                                   error.message_user)
+        if error.category == "CANCELLED":
             return
-        else:
-            self.set_connection(ConnectionState.ERROR)
+        if error.retry_after_seconds:
+            detail = "%s (ponów za %.0f s)" % (detail, error.retry_after_seconds)
+        self.status.set(state, detail, force=True)
 
     def set_connection(self, state: str) -> None:
-        self.status_pill.set_connection(state)
+        """Connectivity probe result -> state machine (sticky states)."""
+        self.status.set(status_from_connectivity(state), "", force=True)
+
+    def _schedule_once(self, delay_ms: int, callback) -> None:
+        """Timer backend for the state machine (Qt single-shot)."""
+        QTimer.singleShot(int(delay_ms), callback)
+
+    def _on_status_changed(self, state: str, detail: str) -> None:
+        self.status_pill.set_status(state, detail)
+        if state not in (STREAMING, SENDING, CONNECTING):
+            self.status_pill.set_elapsed(None)
+        # The send button follows the same state, so the UI cannot contradict
+        # itself ("Stop" while the pill says "Gotowy").
+        self._apply_send_button_state(state)
+
+    def _apply_send_button_state(self, state: str) -> None:
+        if state in (STREAMING, SENDING, CONNECTING):
+            self.send_button.setText(STOP_LABEL)
+            self.send_button.setToolTip("Zatrzymaj generowanie (Esc)")
+        elif state == ERROR:
+            self.send_button.setText(RETRY_LABEL if self._last_failed_message_id
+                                     else SEND_LABEL)
+            self.send_button.setToolTip("Spróbuj ponownie")
+        else:
+            self.send_button.setText(SEND_LABEL)
+            self.send_button.setToolTip("Wyślij wiadomość (Enter)")
+        self.input.set_enabled_for_state(state in (STREAMING, SENDING))
 
     def _on_model_selected(self, model_id: str) -> None:
         """Persist the choice both globally and for the open session."""
@@ -697,36 +743,42 @@ class MainWindow(QMainWindow):
         log.info("ui.model_selected id=%s", model_id)
 
     # ------------------------------------------------------------ generation ui
+    #: ChatService GenerationState -> application status state.
+    _STATE_MAP = {
+        GenerationState.IDLE: IDLE,
+        GenerationState.PREPARING: SENDING,
+        GenerationState.COUNTING_TOKENS: SENDING,
+        GenerationState.UPLOADING: SENDING,
+        GenerationState.STREAMING: STREAMING,
+        GenerationState.CANCELLING: SENDING,
+        GenerationState.COMPLETED: SUCCESS,
+        GenerationState.FAILED: ERROR,
+        GenerationState.CANCELLED: CANCELLED,
+    }
+
     def _current_state(self) -> str:
         if self._session is None:
             return GenerationState.IDLE
         return self._busy_states.get(int(self._session.id or 0),
-                                    GenerationState.IDLE)
+                                     GenerationState.IDLE)
 
-    def _update_generation_ui(self, state: str) -> None:
+    def _update_generation_ui(self, state: str, detail: str = "") -> None:
+        """Translate a generation state into the single app status."""
         import time as _time
 
-        self.status_pill.set_generation(state)
-        if state not in GenerationState.BUSY:
-            self.status_pill.set_detail("")
-        if state in GenerationState.BUSY:
-            if state == GenerationState.STREAMING and not self._generation_started_at:
+        mapped = self._STATE_MAP.get(state, IDLE)
+        if mapped in (STREAMING, SENDING):
+            if not self._generation_started_at:
                 self._generation_started_at = _time.monotonic()
                 self._elapsed_timer.start()
         else:
             self._generation_started_at = 0.0
             self._elapsed_timer.stop()
-        if state in GenerationState.BUSY:
-            self.send_button.setText(STOP_LABEL)
-            self.send_button.setToolTip("Zatrzymaj generowanie (Esc)")
-        elif state == GenerationState.FAILED:
-            self.send_button.setText(RETRY_LABEL)
-            self.send_button.setToolTip("Spróbuj ponownie")
-        else:
-            self.send_button.setText(SEND_LABEL)
-            self.send_button.setToolTip("Wyślij wiadomość (Enter)")
-        # The composer stays editable while streaming so history can be read.
-        self.input.set_enabled_for_state(state in GenerationState.BUSY)
+            self.status_pill.set_elapsed(None)
+        # Sticky environment states are not overwritten by an operation result.
+        if self.status.is_sticky and mapped in (SUCCESS, IDLE):
+            return
+        self.status.set(mapped, detail)
 
     def _tick_elapsed(self) -> None:
         """1 Hz label update: a thinking model can stay silent for a minute."""
@@ -735,7 +787,7 @@ class MainWindow(QMainWindow):
         if not self._generation_started_at:
             return
         elapsed = _time.monotonic() - self._generation_started_at
-        self.status_pill.set_detail("%d s" % int(elapsed))
+        self.status_pill.set_elapsed(int(elapsed))
 
     def _refresh_token_status(self) -> None:
         stats = self.context.stats.window("last_24h")
@@ -873,7 +925,7 @@ class MainWindow(QMainWindow):
                 self._session.title = title.strip()
                 self._title_label.setText(title.strip())
 
-    def delete_session(self, session_id: Optional[int] = None) -> None:
+    def delete_session(self, session_id: Optional[int] = None) -> None:  # noqa: C901
         target = session_id if session_id is not None else \
             (int(self._session.id) if self._session else None)
         if target is None:
@@ -1000,19 +1052,49 @@ class MainWindow(QMainWindow):
     def focus_input(self) -> None:
         self.input.setFocus(Qt.ShortcutFocusReason)
 
-    def _emit_quick_chat(self) -> None:
-        self.quick_chat_requested.emit()
-
     def closeEvent(self, event) -> None:  # noqa: N802 (Qt naming)
         self._flush_draft()
         if self.settings.close_to_tray and _tray_available():
+            # Hide only: the window stays alive so the tray can restore it.
             event.ignore()
             self.hide()
             self._status_session.setText(
                 "Aplikacja działa w zasobniku systemowym.")
             return
         self.shutdown_requested.emit()
+        self.teardown()
         event.accept()
+
+    def teardown(self) -> None:
+        """Release Qt resources deterministically (called on close/exit)."""
+        try:
+            self._elapsed_timer.stop()
+            # ChatWidget owns the message widgets; ChatService is shared with
+            # the application and must survive the window (tray restore).
+            self.chat_widget.cleanup()
+            self.sidebar.set_sessions([])
+            self.attachment_bar.clear()
+            for signal, slot in (
+                    (self.chat.state_changed, self._on_state_changed),
+                    (self.chat.text_delta, self._on_text_delta),
+                    (self.chat.thought_delta, self._on_thought_delta),
+                    (self.chat.message_finalized, self._on_message_finalized),
+                    (self.chat.generation_failed, self._on_generation_failed),
+                    (self.chat.generation_cancelled,
+                     self._on_generation_cancelled),
+                    (self.chat.context_ready, self._on_context_ready),
+                    (self.chat.usage_updated, self._on_usage_updated),
+                    (self.chat.task_result, self._on_task_result),
+                    (self.chat.task_failed, self._on_task_failed)):
+                try:
+                    signal.disconnect(slot)
+                except (TypeError, RuntimeError):
+                    pass
+            self.renderer.clear_cache()
+        except RuntimeError:      # C++ objects already deleted
+            pass
+        except Exception as exc:  # pragma: no cover - teardown must not raise
+            log.warning("ui.teardown_failed err=%s", exc)
 
     def restore_from_tray(self) -> None:
         self.showNormal()
@@ -1021,21 +1103,56 @@ class MainWindow(QMainWindow):
         self.focus_input()
 
     def window_state_snapshot(self) -> str:
-        geometry = self.saveGeometry().toBase64().data().decode("ascii")
-        sizes = self._splitter.sizes()
-        return "%s|%s" % (geometry, ",".join(str(s) for s in sizes))
+        """Serialise geometry + window state + splitter sizes.
 
-    def apply_window_state(self, snapshot: str) -> None:
+        Uses :mod:`gui.window_state` (never ``QByteArrayLiteral``, which PyQt5
+        does not export - it crashed every second launch).
+        """
+        from gui import window_state
+
         try:
-            geometry, sizes = snapshot.split("|", 1)
-            from PyQt5.QtCore import QByteArray, QByteArrayLiteral
-            self.restoreGeometry(QByteArray.fromBase64(
-                QByteArrayLiteral(geometry.encode("ascii"))))
-            values = [int(v) for v in sizes.split(",") if v.strip()]
-            if len(values) == 2:
-                self._splitter.setSizes(values)
-        except (ValueError, TypeError):
-            pass
+            return window_state.encode(
+                self.saveGeometry(), self._splitter.sizes(),
+                maximized=self.isMaximized(), fullscreen=self.isFullScreen())
+        except Exception as exc:
+            # A failed snapshot must never break shutdown.
+            log.warning("ui.snapshot_failed err=%s", exc)
+            return ""
+
+    def apply_window_state(self, snapshot: str) -> bool:
+        """Restore geometry. Returns False (and keeps defaults) when invalid.
+
+        Corrupt or foreign data is rejected, never applied and never causes the
+        user's stored data to be deleted.
+        """
+        from gui import window_state
+
+        if not snapshot:
+            return False
+        migrated = window_state.migrate(snapshot)
+        if migrated is None:
+            log.warning("ui.snapshot_rejected reason=invalid len=%d",
+                        len(snapshot))
+            return False
+        try:
+            geometry, sizes, flags = window_state.decode(migrated)
+        except window_state.SnapshotError as exc:
+            log.warning("ui.snapshot_rejected reason=%s", exc)
+            return False
+        from PyQt5.QtCore import QByteArray
+
+        restored = self.restoreGeometry(QByteArray(geometry))
+        if not restored:
+            log.warning("ui.snapshot_geometry_not_restored")
+        if len(sizes) == 2:
+            self._splitter.setSizes([int(sizes[0]), int(sizes[1])])
+        if flags & window_state.FLAG_MAXIMIZED:
+            self.showMaximized()
+        elif flags & window_state.FLAG_FULLSCREEN:
+            self.showFullScreen()
+        log.info("ui.snapshot_applied maximized=%s sizes=%s",
+                 bool(flags & window_state.FLAG_MAXIMIZED), sizes)
+        return True
 
 
 def _error_dialog_text(error: ProviderError) -> str:
@@ -1067,8 +1184,9 @@ def _connection_hint(state: str) -> str:
 
 
 def _tray_available() -> bool:
-    from PyQt5.QtWidgets import QSystemTrayIcon
-    return QSystemTrayIcon.isSystemTrayAvailable()
+    from core.tray_manager import tray_available
+
+    return tray_available()
 
 
 _negative_counter = {"n": 0}
@@ -1085,4 +1203,4 @@ def _is_qt_sequence(combo: str) -> bool:
     text = (combo or "").lower()
     if text.startswith("win+"):
         return False        # Qt cannot grab the Windows key reliably
-    return QKeySequence(combo).toString() != "" if combo else False
+    return bool(combo) and QKeySequence(combo).toString() != ""

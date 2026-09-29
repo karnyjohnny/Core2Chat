@@ -37,6 +37,9 @@ class SettingsDialog(QDialog):
         self._tabs.addTab(self._build_hotkeys(), "Skróty")
         self._tabs.addTab(self._build_privacy(), "Prywatność")
         self._tabs.addTab(self._build_advanced(), "Zaawansowane")
+        # Opis dostępności modeli powstaje po zbudowaniu wszystkich zakładek:
+        # widget lives w "Zaawansowane", a wcześniej był odpytywany z "API".
+        self._describe_availability()
 
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel
                                    | QDialogButtonBox.Apply)
@@ -264,11 +267,15 @@ class SettingsDialog(QDialog):
     def _build_hotkeys(self) -> QWidget:
         panel = QWidget(self)
         form = QFormLayout(panel)
-        self.quick_chat_hotkey = QLineEdit(panel)
-        self.quick_chat_hotkey.setText(self._settings.quick_chat_hotkey)
-        self.quick_chat_hotkey.setToolTip("Format: Win+C, Ctrl+Alt+Q, Shift+F9")
-        form.addRow("Szybki czat (globalny):", self.quick_chat_hotkey)
+        self.activation_hotkey = QLineEdit(panel)
+        self.activation_hotkey.setText(self._settings.activation_hotkey)
+        self.activation_hotkey.setToolTip(
+            "Globalny skrót: pokazuje główne okno i ustawia fokus na polu "
+            "wpisywania. Format: Win+C, Ctrl+Alt+Q, Shift+F9")
+        form.addRow("Skrót globalny (pokaż okno):", self.activation_hotkey)
 
+        self.activation_hotkey.textChanged.connect(
+            lambda _text: self._validate_hotkey())
         self.hotkey_status = QLabel("")
         self.hotkey_status.setObjectName("MessageMeta")
         self.hotkey_status.setWordWrap(True)
@@ -280,8 +287,9 @@ class SettingsDialog(QDialog):
         form.addRow(self.ctrl_enter)
 
         info = QLabel("Pozostałe skróty: Ctrl+N nowa rozmowa · Ctrl+K "
-                      "szukaj · Ctrl+L fokus · Ctrl+Shift+C kopiuj odpowiedź · "
-                      "Ctrl+, ustawienia · Esc stop/zamknij")
+                      "szukaj · Ctrl+L fokus na pole wpisywania · "
+                      "Ctrl+Shift+C kopiuj odpowiedź · Ctrl+, ustawienia · "
+                      "Enter wyślij · Shift+Enter nowa linia · Esc stop")
         info.setObjectName("MessageMeta")
         info.setWordWrap(True)
         form.addRow(info)
@@ -346,6 +354,38 @@ class SettingsDialog(QDialog):
         self.allow_legacy.setChecked(self._settings.allow_legacy_models)
         form.addRow(self.allow_legacy)
 
+        self.hide_unavailable = QCheckBox(
+            "Ukryj nieobsługiwane modele Gemini", panel)
+        self.hide_unavailable.setChecked(
+            self._settings.hide_unavailable_models)
+        self.hide_unavailable.setToolTip(
+            "Ukrywa modele, które API odrzuciło dla tego klucza (np. HTTP 404 "
+            "\"no longer available to new users\"). Lista jest oparta na "
+            "faktach z API, nie na nazwach modeli.")
+        form.addRow(self.hide_unavailable)
+
+        verify_row = QHBoxLayout()
+        self.verify_models = QPushButton("Zweryfikuj dostępność modeli")
+        self.verify_models.setToolTip(
+            "Wykonuje darmowe zapytanie countTokens dla każdego modelu "
+            "(bez generowania treści), żeby zapełnić filtr przed pierwszą "
+            "rozmową.")
+        self.verify_models.clicked.connect(self._verify_models)
+        verify_row.addWidget(self.verify_models)
+        self.forget_availability = QPushButton("Wyczyść nauczone")
+        self.forget_availability.setToolTip(
+            "Usuwa zapisaną listę niedostępnych modeli - użyj po zmianie "
+            "planu/klucza API.")
+        self.forget_availability.clicked.connect(self._forget_availability)
+        verify_row.addWidget(self.forget_availability)
+        verify_row.addStretch(1)
+        form.addRow("", verify_row)
+
+        self.availability_status = QLabel("")
+        self.availability_status.setObjectName("MessageMeta")
+        self.availability_status.setWordWrap(True)
+        form.addRow("", self.availability_status)
+
         self.max_text_kb = QSpinBox(panel)
         self.max_text_kb.setRange(16, 204800)
         self.max_text_kb.setValue(int(self._settings.max_text_attachment_kb))
@@ -378,13 +418,69 @@ class SettingsDialog(QDialog):
         self.key_status.setText("Klucz usunięty z magazynu.")
 
     def _validate_hotkey(self) -> None:
-        combo = self.quick_chat_hotkey.text().strip()
+        combo = self.activation_hotkey.text().strip()
         _modifiers, _vk, error = parse_hotkey(combo)
         if error:
             self.hotkey_status.setText("⚠ %s" % error)
         else:
             self.hotkey_status.setText(
                 "Poprawny skrót. Rejestracja nastąpi po zapisaniu ustawień.")
+
+    def _describe_availability(self) -> None:
+        if getattr(self, "availability_status", None) is None:
+            return                      # zakładka jeszcze nie zbudowana
+        provider = self.context.provider
+        report = getattr(provider, "availability_report", lambda: [])()
+        blocked = [entry for entry in report if not entry["available"]]
+        if not report:
+            self.availability_status.setText(
+                "Brak zapisanych faktów o dostępności. Użyj przycisku "
+                "„Zweryfikuj dostępność modeli” albo poczekaj na pierwszy "
+                "błąd API - filtr wypełni się automatycznie.")
+            return
+        self.availability_status.setText(
+            "Zapisane: %d modeli, w tym %d niedostępnych%s"
+            % (len(report), len(blocked),
+               ("\n" + "\n".join(
+                   "· %s (%s)" % (entry["model_name"],
+                                  entry["reason"][:70] or "brak powodu")
+                   for entry in blocked[:5])) if blocked else ""))
+
+    def _verify_models(self) -> None:
+        """Blocking on purpose: the user asked for it and it is free."""
+        provider = self.context.provider
+        verify = getattr(provider, "verify_models", None)
+        if verify is None:
+            self.availability_status.setText("Ten dostawca nie wspiera "
+                                             "weryfikacji dostępności.")
+            return
+        from PyQt5.QtWidgets import QApplication
+
+        self.verify_models.setEnabled(False)
+        self.availability_status.setText("Weryfikuję… (darmowe countTokens)")
+        QApplication.processEvents()
+        try:
+            results = verify(limit=20)
+        except Exception as exc:
+            self.availability_status.setText("Weryfikacja nie powiodła się: %s"
+                                             % exc)
+            self.verify_models.setEnabled(True)
+            return
+        blocked = [name for name, ok in results.items() if not ok]
+        self.availability_status.setText(
+            "Zweryfikowano %d modeli; niedostępnych: %d%s"
+            % (len(results), len(blocked),
+               (" (" + ", ".join(blocked[:4]) + ")") if blocked else ""))
+        self.verify_models.setEnabled(True)
+        self._describe_availability()
+
+    def _forget_availability(self) -> None:
+        provider = self.context.provider
+        forget = getattr(provider, "forget_availability", None)
+        if forget is None:
+            return
+        forget(None)
+        self._describe_availability()
 
     def _validate_connection(self) -> None:
         provider = self.context.provider
@@ -440,7 +536,7 @@ class SettingsDialog(QDialog):
         settings.thinking_level = self.thinking_level.currentData()
         settings.min_cached_tokens = self.min_cached.value()
 
-        settings.quick_chat_hotkey = self.quick_chat_hotkey.text().strip()
+        settings.activation_hotkey = self.activation_hotkey.text().strip()
         settings.send_with_ctrl_enter = self.ctrl_enter.isChecked()
 
         settings.store_remote_interactions = self.store_remote.isChecked()
@@ -452,6 +548,7 @@ class SettingsDialog(QDialog):
         settings.api_diagnostics = self.api_diagnostics.isChecked()
         settings.show_thinking = self.show_thinking.isChecked()
         settings.allow_legacy_models = self.allow_legacy.isChecked()
+        settings.hide_unavailable_models = self.hide_unavailable.isChecked()
         settings.max_text_attachment_kb = self.max_text_kb.value()
         settings.max_image_attachment_kb = self.max_image_kb.value()
         settings.sidebar_width = self.sidebar_width.value()
@@ -463,7 +560,7 @@ class SettingsDialog(QDialog):
         from gui.theme import validate_color
         if validate_color(settings.accent_color, "") == "":
             errors.append("Kolor akcentu musi mieć format #rgb lub #rrggbb.")
-        _modifiers, _vk, hotkey_error = parse_hotkey(settings.quick_chat_hotkey)
+        _modifiers, _vk, hotkey_error = parse_hotkey(settings.activation_hotkey)
         if hotkey_error:
             errors.append("Skrót: %s" % hotkey_error)
         errors.extend(settings.validate())

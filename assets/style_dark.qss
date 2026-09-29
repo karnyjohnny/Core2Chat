@@ -50,18 +50,30 @@ QListWidget::item {
     color: {{TEXT}};
 }
 
+QListWidget {
+    alternate-background-color: {{ALT_ROW}};
+    selection-background-color: {{SELECTED_BG}};
+    selection-color: {{SELECTED_TEXT}};
+}
+
 QListWidget::item:hover {
-    background-color: {{SURFACE}};
+    background-color: {{ROW_HOVER}};
+    color: {{TEXT}};
+}
+
+QListWidget::item:alternate {
+    background-color: {{ALT_ROW}};
+    color: {{TEXT}};
 }
 
 QListWidget::item:selected {
-    background-color: {{ACCENT}};
-    color: #ffffff;
+    background-color: {{SELECTED_BG}};
+    color: {{SELECTED_TEXT}};
 }
 
 QListWidget::item:selected:!active {
-    background-color: {{ACCENT}};
-    color: #ffffff;
+    background-color: {{SELECTED_BG}};
+    color: {{SELECTED_TEXT}};
 }
 
 /* ------------------------------------------------------------- inputs */
@@ -79,9 +91,16 @@ QLineEdit:focus, QTextEdit:focus, QPlainTextEdit:focus, QComboBox:focus {
     border: 1px solid {{ACCENT}};
 }
 
-QLineEdit:disabled, QTextEdit:disabled, QComboBox:disabled {
+QLineEdit:disabled, QTextEdit:disabled, QComboBox:disabled,
+QSpinBox:disabled, QDoubleSpinBox:disabled {
     color: {{MUTED}};
     background-color: {{BG}};
+    border-color: {{BORDER}};
+}
+
+QLineEdit:read-only, QTextEdit:read-only {
+    background-color: {{ALT_ROW}};
+    color: {{TEXT}};
 }
 
 QComboBox::drop-down {
@@ -395,12 +414,18 @@ QMenu {
     padding: 2px;
 }
 QMenu::item { padding: 3px 18px; border-radius: 2px; }
-QMenu::item:selected { background-color: {{ACCENT}}; color: #ffffff; }
+QMenu::item:selected { background-color: {{SELECTED_BG}}; color: {{SELECTED_TEXT}}; }
+QMenu::item:disabled { color: {{MUTED}}; background-color: {{SURFACE}}; }
 QMenu::separator { height: 1px; background: {{BORDER}}; margin: 3px 6px; }
 
 QSplitter::handle { background-color: {{BORDER}}; }
 QSplitter::handle:horizontal { width: 1px; }
 QSplitter::handle:vertical { height: 1px; }
+
+/* ------------------------------------------------------------ tables/lists
+   Every state is defined explicitly: normal, alternate, hover, selected and
+   selected-without-focus. Relying on the platform palette here is what produced
+   a light alternate row with light text (unreadable) in dark mode. */
 
 QHeaderView::section {
     background-color: {{SURFACE}};
@@ -410,12 +435,65 @@ QHeaderView::section {
     color: {{MUTED}};
 }
 
-QTableWidget { gridline-color: {{BORDER}}; border: 1px solid {{BORDER}}; }
-QTableWidget::item:selected { background-color: {{ACCENT}}; color: #ffffff; }
+QHeaderView::section:hover { color: {{TEXT}}; }
 
-#QuickChatFrame {
+QTableWidget, QTableView, QTreeWidget, QTreeView, QListView {
+    background-color: {{BG}};
+    alternate-background-color: {{ALT_ROW}};
+    color: {{TEXT}};
+    gridline-color: {{BORDER}};
+    border: 1px solid {{BORDER}};
+    selection-background-color: {{SELECTED_BG}};
+    selection-color: {{SELECTED_TEXT}};
+    outline: 0;
+}
+
+QTableWidget::item, QTableView::item, QTreeWidget::item, QListView::item {
+    background-color: {{BG}};
+    color: {{TEXT}};
+    border: none;
+    padding: 2px 4px;
+}
+
+QTableWidget::item:alternate, QTableView::item:alternate,
+QTreeWidget::item:alternate, QListView::item:alternate {
+    background-color: {{ALT_ROW}};
+    color: {{TEXT}};
+}
+
+QTableWidget::item:hover, QTableView::item:hover,
+QTreeWidget::item:hover, QListView::item:hover {
+    background-color: {{ROW_HOVER}};
+    color: {{TEXT}};
+}
+
+QTableWidget::item:selected, QTableView::item:selected,
+QTreeWidget::item:selected, QListView::item:selected {
+    background-color: {{SELECTED_BG}};
+    color: {{SELECTED_TEXT}};
+}
+
+QTableWidget::item:selected:hover, QTableView::item:selected:hover,
+QTreeWidget::item:selected:hover, QListView::item:selected:hover {
+    background-color: {{SELECTED_BG}};
+    color: {{SELECTED_TEXT}};
+}
+
+/* Selected but the window is not focused: still readable, not white-on-white. */
+QTableWidget::item:selected:!active, QTableView::item:selected:!active,
+QTreeWidget::item:selected:!active, QListView::item:selected:!active {
+    background-color: {{SELECTED_BG}};
+    color: {{SELECTED_TEXT}};
+}
+
+QTableWidget::item:disabled, QTableView::item:disabled {
+    color: {{MUTED}};
+    background-color: {{BG}};
+}
+
+QTableCornerButton::section {
     background-color: {{SURFACE}};
-    border: 1px solid {{ACCENT}};
+    border: none;
 }
 
 #EmptyStateLabel {

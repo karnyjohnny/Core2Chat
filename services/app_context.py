@@ -22,10 +22,11 @@ from core.logging_setup import get_logger, setup_logging
 from core.security import SecretStore
 from db.database import Database
 from db.repositories import (AttachmentRepository, MessageRepository,
-                             ModelCacheRepository, PinnedContextRepository,
-                             PresetRepository, ProviderCacheRepository,
-                             SearchService, SessionRepository,
-                             SettingsRepository, TokenStatsRepository)
+                             ModelAvailabilityRepository, ModelCacheRepository,
+                             PinnedContextRepository, PresetRepository,
+                             ProviderCacheRepository, SearchService,
+                             SessionRepository, SettingsRepository,
+                             TokenStatsRepository)
 from models.chat_models import StateMode
 from utils import paths as path_util
 
@@ -101,6 +102,15 @@ class AppContext(object):
         if ok:
             self.settings = self.config.settings
             self._apply_settings_to_services()
+            # UI state is mirrored into the database so that a config write
+            # failure can never lose the pointer to the open conversation.
+            try:
+                if self.db is not None:
+                    self.app_settings_repo.set(
+                        "app.last_session_id",
+                        int(self.settings.last_session_id or 0))
+            except Exception as exc:  # pragma: no cover - best effort mirror
+                self.log.warning("app.last_session_mirror_failed err=%s", exc)
         return ok, errors
 
     def _init_logging(self) -> None:
@@ -128,6 +138,7 @@ class AppContext(object):
             max_retries=self.settings.max_retries,
             model_cache=ModelCacheRepository(self.db),
             provider_cache=ProviderCacheRepository(self.db),
+            model_availability=ModelAvailabilityRepository(self.db),
             model_ttl_seconds=self.settings.model_cache_ttl_seconds)
         self.registry.register(provider)
 
@@ -189,6 +200,10 @@ class AppContext(object):
     @property
     def model_cache(self) -> ModelCacheRepository:
         return ModelCacheRepository(self._require_db())
+
+    @property
+    def model_availability(self) -> ModelAvailabilityRepository:
+        return ModelAvailabilityRepository(self._require_db())
 
     @property
     def provider_cache(self) -> ProviderCacheRepository:

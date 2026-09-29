@@ -15,7 +15,7 @@ import sys
 import threading
 from typing import Callable, Dict, List, Optional, Tuple
 
-from core.constants import HOTKEY_ID_QUICK_CHAT
+from core.constants import HOTKEY_ID_ACTIVATE
 from core.logging_setup import get_logger
 
 log = get_logger("hotkey")
@@ -140,7 +140,7 @@ class HotkeyManager(object):
 
     # -------------------------------------------------------------- public
     def register(self, combo: str, callback: Callable[[], None],
-                 hotkey_id: int = HOTKEY_ID_QUICK_CHAT) -> bool:
+                 hotkey_id: int = HOTKEY_ID_ACTIVATE) -> bool:
         """Register ``combo``; returns False with ``last_error`` set on failure."""
         modifiers, vk, error = parse_hotkey(combo)
         if error:
@@ -158,7 +158,7 @@ class HotkeyManager(object):
         self._ensure_thread()
         return self._wait_for_registration(hotkey_id)
 
-    def unregister(self, hotkey_id: int = HOTKEY_ID_QUICK_CHAT) -> None:
+    def unregister(self, hotkey_id: int = HOTKEY_ID_ACTIVATE) -> None:
         with self._lock:
             self._callbacks.pop(hotkey_id, None)
             self._registered.pop(hotkey_id, None)

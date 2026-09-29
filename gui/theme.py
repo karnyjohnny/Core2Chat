@@ -24,6 +24,13 @@ DARK_PALETTE: Dict[str, str] = {
     "BORDER": "#3f3f46",
     "CODE_BG": "#1a1a1a",
     "CODE_HEAD_BG": "#252526",
+    # Row/selection states. QSS does not cover every Qt palette role (notably
+    # AlternateBase), so the palette is the source of truth for those and the
+    # stylesheet mirrors the same values.
+    "ALT_ROW": "#262628",
+    "ROW_HOVER": "#333337",
+    "SELECTED_BG": ACCENT_COLOR,
+    "SELECTED_TEXT": "#ffffff",
 }
 
 LIGHT_PALETTE: Dict[str, str] = {
@@ -36,6 +43,10 @@ LIGHT_PALETTE: Dict[str, str] = {
     "BORDER": "#d0d0d0",
     "CODE_BG": "#f5f5f5",
     "CODE_HEAD_BG": "#ececec",
+    "ALT_ROW": "#f2f2f2",
+    "ROW_HOVER": "#e6e6e6",
+    "SELECTED_BG": "#0a66c2",
+    "SELECTED_TEXT": "#ffffff",
 }
 
 _template_cache: Dict[str, str] = {}
@@ -59,9 +70,7 @@ def build_stylesheet(dark: bool = True, accent: str = ACCENT_COLOR,
                      font_size: int = DEFAULT_FONT_SIZE,
                      code_font_size: int = DEFAULT_CODE_FONT_SIZE,
                      template: Optional[str] = None) -> str:
-    palette = dict(DARK_PALETTE if dark else LIGHT_PALETTE)
-    if accent:
-        palette["ACCENT"] = accent
+    palette = palette_tokens(dark, accent)
     meta_size = max(7, int(font_size) - 1)
     substitutions = dict(palette)
     substitutions.update({
@@ -73,6 +82,77 @@ def build_stylesheet(dark: bool = True, accent: str = ACCENT_COLOR,
     for key, value in substitutions.items():
         source = source.replace("{{%s}}" % key, value)
     return source
+
+
+def build_palette(dark: bool = True, accent: str = ACCENT_COLOR):
+    """Qt palette derived from the same tokens as the stylesheet.
+
+    Without this, widgets fall back to the platform palette (white base, black
+    text) and any area the stylesheet does not cover becomes unreadable -
+    which is exactly how the "light row + white text" table bug appeared.
+    """
+    from PyQt5.QtGui import QColor, QPalette
+
+    tokens = palette_tokens(dark, accent)
+    palette = QPalette()
+
+    def set_color(role, token: str) -> None:
+        palette.setColor(role, QColor(tokens[token]))
+
+    from PyQt5.QtGui import QPalette as _P
+
+    set_color(_P.Window, "BG")
+    set_color(_P.WindowText, "TEXT")
+    set_color(_P.Base, "SURFACE")
+    set_color(_P.AlternateBase, "ALT_ROW")
+    set_color(_P.Text, "TEXT")
+    set_color(_P.Button, "SURFACE")
+    set_color(_P.ButtonText, "TEXT")
+    set_color(_P.BrightText, "TEXT")
+    set_color(_P.ToolTipBase, "SURFACE")
+    set_color(_P.ToolTipText, "TEXT")
+    set_color(_P.Highlight, "SELECTED_BG")
+    set_color(_P.HighlightedText, "SELECTED_TEXT")
+    set_color(_P.Link, "ACCENT")
+    set_color(_P.LinkVisited, "ACCENT")
+    set_color(_P.Mid, "BORDER")
+    set_color(_P.Midlight, "BORDER")
+    set_color(_P.Dark, "BORDER")
+    set_color(_P.Shadow, "BORDER")
+    set_color(_P.PlaceholderText, "MUTED")
+
+    # Disabled/inactive states must stay readable, not invert into the
+    # background.
+    for group in (_P.Disabled,):
+        palette.setColor(group, _P.Text, QColor(tokens["MUTED"]))
+        palette.setColor(group, _P.WindowText, QColor(tokens["MUTED"]))
+        palette.setColor(group, _P.ButtonText, QColor(tokens["MUTED"]))
+        palette.setColor(group, _P.Base, QColor(tokens["BG"]))
+        palette.setColor(group, _P.Highlight, QColor(tokens["BORDER"]))
+        palette.setColor(group, _P.HighlightedText, QColor(tokens["TEXT"]))
+    palette.setColor(_P.Inactive, _P.Highlight, QColor(tokens["SELECTED_BG"]))
+    palette.setColor(_P.Inactive, _P.HighlightedText,
+                     QColor(tokens["SELECTED_TEXT"]))
+    return palette
+
+
+def palette_tokens(dark: bool = True, accent: str = ACCENT_COLOR) -> Dict[str, str]:
+    """Resolve the token table used by both the stylesheet and the palette."""
+    tokens = dict(DARK_PALETTE if dark else LIGHT_PALETTE)
+    if accent:
+        tokens["ACCENT"] = accent
+        tokens["SELECTED_BG"] = accent
+    return tokens
+
+
+def apply_theme(app, dark: bool = True, accent: str = ACCENT_COLOR,
+                font_size: int = DEFAULT_FONT_SIZE,
+                code_font_size: int = DEFAULT_CODE_FONT_SIZE) -> str:
+    """Set palette + stylesheet on the application in one call."""
+    app.setPalette(build_palette(dark, accent))
+    stylesheet = build_stylesheet(dark, accent, font_size, code_font_size)
+    app.setStyleSheet(stylesheet)
+    return stylesheet
 
 
 def repolish(widget) -> None:

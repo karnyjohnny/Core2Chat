@@ -5,7 +5,13 @@ architektoniczna.
 
 ## Środowisko docelowe
 
-- Python **3.8.20** — kod piszemy w składni 3.8: `typing.List/Dict/Optional`,
+- **Windows 7 SP1 x64** to system docelowy (potwierdzone testami użytkownika).
+- Python **3.8.x**. W CI **3.8.10** — to ostatnia wersja 3.8, dla której
+  python.org publikuje binaria; 3.8.11+ (w tym 3.8.20) są wydawane wyłącznie
+  jako źródła, więc `actions/setup-python` ich nie zainstaluje. Lokalny,
+  nieoficjalny build 3.8.20 działa, bo kod celuje w składnię 3.8, nie w
+  podwersję.
+- Kod piszemy w składni 3.8: `typing.List/Dict/Optional`,
   **bez** `list[str]`, **bez** `X | None`, **bez** `match`, **bez**
   `str.removeprefix/removesuffix`, **bez** `functools.cache`, `asyncio.to_thread`,
   `itertools.pairwise`, `zoneinfo`, `graphlib`.
@@ -129,7 +135,7 @@ Nie zmieniaj tego bez ponownej weryfikacji (skill `gemini-api-audit`).
 
 ```bash
 # testy (bez sieci i bez klucza)
-QT_QPA_PLATFORM=offscreen python -m pytest            # 308 testów, ~30 s
+QT_QPA_PLATFORM=offscreen python -m pytest            # 495 testów, ~85 s
 QT_QPA_PLATFORM=offscreen python -m pytest tests/integration -q
 
 # live smoke (opt-in; klucz tylko z env)
@@ -143,8 +149,9 @@ python main.py
 python main.py --diagnostics
 
 # pakowanie
-python build.py --check          # skan sekretów + walidacja spec
+python build.py --check          # skan sekretów (drzewo + historia git) + spec
 python build.py --mode release   # onedir (zalecane dla Windows 7)
+python build.py --verify-dist    # domknięcie zależności zbudowanej paczki
 ```
 
 Dane aplikacji: `CORE2CHAT_DATA_DIR` > `portable.flag`+`data/` >
@@ -170,11 +177,59 @@ Dane aplikacji: `CORE2CHAT_DATA_DIR` > `portable.flag`+`data/` >
 7. **`ProviderError` zamiast wyjątków technicznych** — kategoria + komunikat PL
    dla użytkownika + komunikat techniczny bez sekretów.
 
+## PyQt5 — pułapki potwierdzone testami (nie powtarzaj tych błędów)
+
+1. **`QByteArrayLiteral` nie istnieje w PyQt5** (to makro C++). Import w
+   funkcji = crash przy *drugim* uruchomieniu. Stan okna serializuj przez
+   `gui/window_state.py` (`QByteArray(bytes)` + base64 + wersja + walidacja).
+2. **`event.modifiers() & Qt.ShiftModifier` zwraca obiekt flag, nie int.**
+   `(mods & Qt.ShiftModifier) == 0` jest ZAWSZE fałszywe → `Enter` robił nową
+   linię. Używaj wyłącznie `gui/input_policy.has_modifier()`.
+3. **`QSystemTrayIcon.isSystemTrayAvailable()` bez `QApplication` = segfault.**
+   Zawsze przez `core/tray_manager.tray_available()`.
+4. **`QMenu(None)` / ikona bez właściciela** mogą zostać zebrane przez GC
+   Pythona, gdy Qt wciąż trzyma wskaźnik → tray przestaje reagować. Właściciel:
+   okno, a gdy brak — `QApplication` (+ silna referencja Pythona).
+5. **`close()` nie niszczy okna.** Bez `WA_DeleteOnClose` + jawnego `teardown()`
+   każdy cykl zamknij/otwórz zostawia całe drzewo widgetów (zmierzone:
+   +3,6 MB i +2 okna top-level na cykl).
+6. **`processEvents()` nie wykonuje `deleteLater()`.** W testach używaj fixture
+   `qt_pump` (`sendPostedEvents(None, QEvent.DeferredDelete)`), inaczej test
+   „widzi" wyciek, którego w produkcji (pełna pętla `exec_()`) nie ma.
+7. **`httpx.Timeout(300, read=120)`** — argument pozycyjny jest nadpisywany
+   przez `read=` z kwargs. Timeouty buduj jawnie po nazwach.
+8. **`setPlainText()` zostawia kursor na pozycji 0** → dopisywanie trafia przed
+   tekst. Po `set_text()` zawsze `moveCursor(QTextCursor.End)`.
+9. **QSS nie ustawia palety.** Obszary nieuwzględnione w QSS (m.in.
+   `AlternateBase`) biorą kolory platformy → biały tekst na jasnym wierszu.
+   Zawsze `gui/theme.apply_theme()` (paleta + QSS z tych samych tokenów).
+10. **Modalne dialogi (`QMessageBox`, `QInputDialog`) blokują test headless.**
+    W testach podstawiaj je przez `monkeypatch`, a walidację ustawień testuj
+    przez `_validate()` / `_on_apply()`.
+
+## Wydanie 0.1.1 — co się zmieniło architektonicznie
+
+- **Quick Chat usunięty** (decyzja §5.1 zadania). Skrót globalny `Win+C`
+  pokazuje główne okno i ustawia fokus na polu (`show_and_focus_main`).
+  Ustawienie `quick_chat_hotkey` migruje się do `activation_hotkey`.
+- **Maszyna stanów** `services/app_status.py` jest JEDYNYM źródłem stanu
+  pokazywanego w UI. Stany przejściowe (SUCCESS/ERROR/CANCELLED/RATE_LIMITED)
+  wracają do IDLE po 6 s; środowiskowe (OFFLINE/PAUSED/AUTH_REQUIRED) trwają
+  do zmiany środowiska. Nie sklejaj stanu z dwóch źródeł.
+- **Dostępność modeli** jest trwała (`model_availability`, migracja v2) i
+  oparta wyłącznie na faktach z API. Nie dodawaj nazw modeli do kodu.
+- **Paczka**: `pyinstaller.spec` tnie moduły PyQt5, biblioteki Qt i wtyczki;
+  `build.py --verify-dist` sprawdza domknięcie zależności i rozróżnia
+  „wycięliśmy potrzebne" (błąd) od „kontener tego nie ma" (ostrzeżenie).
+  Listy w `build.py` i w spec muszą być identyczne — pilnuje tego test.
+
 ## Znane luki / do zrobienia
 
-- Build PyInstaller nieuruchomiony w kontenerze (wada środowiska: bootstrap nie
-  znajduje `ipaddress`, reprodukowalne dla „hello world"). Weryfikacja na
-  Windows wymagana.
+- Uruchomienie zbudowanego binarium jest weryfikowane **u użytkownika** na
+  Windows 7 (lista 10 kroków w `.github/RELEASE.md`), nie w CI: runner GitHuba
+  to Windows Server 2022, a kontener developerski ma niespójny stdlib
+  (bootstrap PyInstallera nie znajduje `ipaddress` — reprodukowalne dla
+  „hello world").
 - RSS 62,2 MB vs cel ≈60 MB (Linux); pomiar na Windows do wykonania.
 - Brak pętli function calling w UI (model zdarzeń gotowy).
 - Interfejs tylko PL; tłumaczenie EN niekompletne.

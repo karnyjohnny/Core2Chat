@@ -2,7 +2,11 @@
 
 Lekki, **natywny** desktopowy klient AI do rozmów z Google Gemini — bez silnika przeglądarki, bez Electrona, bez Chromium. Zaprojektowany tak, żeby działał płynnie także na starym sprzęcie (Windows 7, 2–4 GB RAM, dysk talerzowy).
 
-> Status: **v0.1.0** — pierwsza wersja testowalna. Rdzeń, warstwa API i GUI są zaimplementowane i pokryte testami; szczegóły w sekcji [Status weryfikacji](#status-weryfikacji).
+> Status: **v0.1.1** — wydanie stabilizacyjne po testach na Windows 7 SP1.
+> Naprawiono crash przy drugim uruchomieniu, obsługę `Enter`, wyciek widgetów,
+> kontrast tabel i cykl życia zasobnika; usunięto Quick Chat.
+> Szczegóły w [CHANGELOG](CHANGELOG.md) i w sekcji
+> [Status weryfikacji](#status-weryfikacji).
 
 ---
 
@@ -41,7 +45,7 @@ Przeglądarkowe interfejsy AI potrafią zajmować kilkaset megabajtów RAM i roz
 
 ## Funkcje
 
-Zaimplementowane w v0.1.0:
+Zaimplementowane (stan na v0.1.1):
 
 | Obszar | Funkcje |
 |---|---|
@@ -63,7 +67,7 @@ Skróty klawiszowe: `Ctrl+N` nowa rozmowa · `Ctrl+K` szukaj · `Ctrl+L` fokus n
 
 | | Wersja docelowa | Uwagi |
 |---|---|---|
-| Python | **3.8.20** | kod jest trzymany w składni 3.8; pilnuje tego test `tests/test_py38_compat.py` |
+| Python | **3.8.x** (3.8.10 w CI) | kod jest trzymany w składni 3.8; pilnuje tego test `tests/test_py38_compat.py`. 3.8.10 to ostatnia wersja 3.8 z oficjalnymi binariami python.org — 3.8.11+ są wydawane tylko jako źródła, więc CI nie może ich zainstalować. Lokalny build 3.8.20 (nieoficjalny) również działa. |
 | PyQt5 | **5.15.11** | QtWebEngine / PySide / PyQt6 są zabronione i wykluczone z builda |
 | httpx | **0.28.1** | jedyny stos HTTP |
 | System | Windows 7 i nowsze | dev/testy działają też na Linuksie i macOS |
@@ -296,7 +300,7 @@ Zalecany tryb dla Windows 7: **onedir** (brak etapu samorozpakowania → szybszy
 
 ## Windows 7 — uwagi
 
-- PyQt5 5.15.11 i Python 3.8.20 to ostatnie combination wygodnie wspierające Win7.
+- PyQt5 5.15.11 i Python 3.8.x to ostatnie combination wygodnie wspierające Win7.
 - PyInstaller: build **na najstarszym wspieranym systemie**. Bootloader PyInstallera jest kompilowany z `NTDDI_VERSION=0x06010000` / `_WIN32_WINNT=0x0601` (poziom Windows 7), ale projekt oficjalnie wspiera Windows 8+ — dlatego w `requirements-dev.txt` przypięto `pyinstaller==5.13.2`.
 - Skrót `Win+C` może być zajęty przez inny proces: rejestracja jest wtedy raportowana w ustawieniach, a aplikacja działa dalej bez skrótu.
 - Dysk talerzowy: `PRAGMA mmap_size=0` (niższy RSS), stronicowanie historii, brak synchronicznych skanów przy starcie.
@@ -330,25 +334,32 @@ Zasada projektu: **brak dowodu = „niezweryfikowane", nie „zrobione"**.
 
 | Obszar | Status | Dowód |
 |---|---|---|
-| Baza danych (WAL, migracje, CRUD, stronicowanie, współbieżność) | PASS | `pytest tests/test_database.py` → 30 passed |
+| Baza danych (WAL, migracje v1→v2, CRUD, stronicowanie, współbieżność) | PASS | `pytest tests/test_database.py` → 31 passed |
 | Parser SSE i zdarzenia strumienia | PASS | `pytest tests/test_sse_parser.py` → 20 passed |
-| Adapter Gemini (mockowane odpowiedzi nagrane z live API) | PASS | `pytest tests/test_gemini_provider.py` → 60 passed |
+| Adapter Gemini (fixture'y nagrane z live API) | PASS | `pytest tests/test_gemini_provider.py` → 64 passed |
 | Menedżer kontekstu | PASS | `pytest tests/test_context_manager.py` → 18 passed |
 | Markdown + kolorowanie + bezpieczeństwo HTML | PASS | `pytest tests/test_markdown.py` → 45 passed |
-| Bezpieczeństwo (DPAPI/fallback, redakcja, eksporty, sanityzator diagnostyki) | PASS | `pytest tests/test_security.py` → 27 passed |
+| Bezpieczeństwo (DPAPI/fallback, redakcja, eksporty, diagnostyka) | PASS | `pytest tests/test_security.py` → 28 passed |
 | Załączniki | PASS | `pytest tests/test_attachments.py` → 27 passed |
 | Hotkey (RegisterHotKey, konflikty, fallback) | PASS | `pytest tests/test_hotkey.py` → 20 passed |
 | Single instance (blokada, przekazywanie komend, tryby awaryjne) | PASS | `pytest tests/test_single_instance.py` → 10 passed, 1 skipped (ścieżka Win32) |
-| Start aplikacji end-to-end (`main.py --smoke-test`) | PASS | exit 0, `errors: []`, WAL, start 111 ms |
-| Konfiguracja | PASS | `pytest tests/test_config.py` → 18 passed |
-| Zgodność z Python 3.8 + zakazane zależności + `build.py --check` | PASS | `pytest tests/test_py38_compat.py` → 9 passed |
-| Integracja GUI↔usługi↔SQLite (streaming, stop, race, restart, fork, eksport) | PASS | `pytest tests/integration` → 22 passed |
-| Budżety wydajnościowe | PASS | `pytest tests/test_performance.py` → 15 passed |
-| **Łącznie** | **PASS** | `pytest` → **322 passed, 0 failed, 1 skipped (ścieżka Win32) w ~30 s** |
-| Live API Gemini | PASS | `python tests/live_gemini_smoke.py` → **18 PASS / 0 FAIL / 3 INFO**, exit 0 |
-| Pakowanie PyInstaller | **BLOCKED** | build zakończony sukcesem (spec poprawny, zasoby dołączone, brak zabronionych modułów w drzewie), ale zamrożony binarny nie startuje w tym kontenerze: błąd bootstrapu `No module named 'ipaddress'` reprodukuje się także dla „hello world" → wada środowiska (interpreter `/opt/arena-python` czyta stdlib z `/usr/lib/python3.11`) |
-| Pomiar RSS na Windows 7 | **NOT VERIFIED** | brak maszyny z Windows w tym środowisku |
-| Ręczny test GUI na Windows | **NOT VERIFIED** | j.w. |
+| Konfiguracja + migracja nazw ustawień | PASS | `pytest tests/test_config.py` → 19 passed |
+| Zgodność z Python 3.8 + zakazane zależności + spójność builda | PASS | `pytest tests/test_py38_compat.py` → 13 passed |
+| **Stan okna / persistence geometrii (P0.1)** | PASS | `pytest tests/test_window_state.py` → 30 passed |
+| **Restartowalność: cykle START→CLOSE→START, SIGKILL, WAL (P0.3)** | PASS | `pytest tests/integration/test_restart.py` → 8 passed |
+| **Maszyna stanów aplikacji (P1.3)** | PASS | `pytest tests/test_app_status.py` → 38 passed |
+| **Kontrast tabeli/list, dark i light mode (P1.2)** | PASS | `pytest tests/test_theme_contrast.py` → 17 passed |
+| **Tray lifecycle: 25 cykli, segfault guard (P1.1)** | PASS | `pytest tests/test_tray.py` → 19 passed |
+| Integracja GUI↔usługi↔SQLite (streaming, stop, race, fork, eksport) | PASS | `pytest tests/integration/test_chat_flow.py` → 22 passed |
+| **Regression lock funkcji z Windows 7 (§15)** | PASS | `pytest tests/test_regression_lock.py` → 34 passed |
+| Budżety wydajnościowe + regresja wycieku widgetów | PASS | `pytest tests/test_performance.py` → 16 passed |
+| Walidacja workflow CI/CD (§18) | PASS | `pytest tests/test_ci_workflow.py` → 16 passed |
+| **Łącznie** | **PASS** | `pytest` → **496 zebranych = 495 passed + 1 skipped (ścieżka Win32), ~85 s** |
+| Live API Gemini | PASS | `python tests/live_gemini_smoke.py` → **18 PASS / 0 FAIL / 2 INFO**, exit 0 |
+| Start aplikacji end-to-end | PASS | `python main.py --smoke-test 1.5` → exit 0, `errors: []`, WAL, ~110 ms |
+| Build PyInstaller (spec, zasoby, przycinanie, domknięcie zależności) | PASS | `python build.py --mode release` → 123 MB, `--verify-dist`: 0 błędów |
+| **Uruchomienie `Core2Chat.exe` na Windows 7** | **DO WYKONANIA U CIEBIE** | kontener dev nie uruchamia frozen binary (niespójny stdlib interpretera — reprodukowalne dla „hello world"); procedura: `.github/RELEASE.md` |
+| Pomiar RSS/startu na Windows 7 | **DO WYKONANIA U CIEBIE** | brak maszyny z Windows w środowisku dev |
 
 ### Wynik live smoke testu (2026-09-29)
 

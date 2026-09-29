@@ -483,7 +483,8 @@ class ChatService(QObject):
             models = provider.list_models(
                 force_refresh=force,
                 include_legacy=settings.allow_legacy_models,
-                include_preview=True, chat_only=True)
+                include_preview=True, chat_only=True,
+                hide_unavailable=settings.hide_unavailable_models)
             return models
 
         return self.run_task("models.refresh", _fetch)

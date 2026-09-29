@@ -9,8 +9,8 @@ import os
 import pytest
 
 from core.config import AppSettings, ConfigStore, default_settings
-from core.constants import (DEFAULT_CONTEXT_LIMIT_PERCENT,
-                            DEFAULT_QUICK_CHAT_HOTKEY,
+from core.constants import (DEFAULT_ACTIVATION_HOTKEY,
+                            DEFAULT_CONTEXT_LIMIT_PERCENT,
                             GEMINI_DEFAULT_BASE_URL)
 from models.chat_models import StateMode
 
@@ -27,7 +27,7 @@ def test_defaults_match_the_specification(store):
     assert settings.dark_theme is True
     assert settings.provider_id == "gemini"
     assert settings.base_url == GEMINI_DEFAULT_BASE_URL
-    assert settings.quick_chat_hotkey == DEFAULT_QUICK_CHAT_HOTKEY
+    assert settings.activation_hotkey == DEFAULT_ACTIVATION_HOTKEY
     assert settings.context_limit_percent == DEFAULT_CONTEXT_LIMIT_PERCENT
     assert settings.state_mode == StateMode.LOCAL
     assert settings.close_to_tray is True
@@ -71,6 +71,21 @@ def test_config_file_permissions_are_restricted(store, tmp_path):
         pytest.skip("POSIX permission bits do not apply on Windows")
     store.save(store.load())
     assert os.stat(store.path).st_mode & 0o777 == 0o600
+
+
+def test_renamed_hotkey_setting_is_migrated(store):
+    """Upgrade path: 'quick_chat_hotkey' (Quick Chat removed) must not be lost."""
+    with open(store.path, "w", encoding="utf-8") as handle:
+        json.dump({"version": 1,
+                   "settings": {"quick_chat_hotkey": "Ctrl+Alt+Q"}}, handle)
+    settings = store.load()
+    assert settings.activation_hotkey == "Ctrl+Alt+Q"
+    assert not hasattr(settings, "quick_chat_hotkey")
+    # Zapis utrwala nową nazwę.
+    store.save(settings)
+    raw = json.load(open(store.path, encoding="utf-8"))
+    assert raw["settings"]["activation_hotkey"] == "Ctrl+Alt+Q"
+    assert "quick_chat_hotkey" not in raw["settings"]
 
 
 def test_unknown_keys_are_ignored(store):

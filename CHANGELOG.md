@@ -4,6 +4,212 @@ Wszystkie istotne zmiany w projekcie Core2Chat.
 Format zgodny z [Keep a Changelog](https://keepachangelog.com/pl-PL/1.1.0/),
 wersjonowanie zgodnie z [SemVer](https://semver.org/lang/pl/).
 
+## [0.1.1] - 2026-09-29
+
+Wydanie stabilizacyjne po testach na **Windows 7 SP1 x64 / Python 3.8**.
+Naprawiono błędy blokujące release (P0), trzy problemy ważne (P1) i podjęto
+decyzję architektoniczną o usunięciu Quick Chat (P2).
+
+### Naprawione — P0 (blokowało release)
+
+- **Crash `QByteArrayLiteral` przy każdym drugim uruchomieniu.** PyQt5 nie
+  eksportuje `QByteArrayLiteral` (to makro C++), a import siedział wewnątrz
+  `MainWindow.apply_window_state()` — więc wywalał się dopiero wtedy, gdy
+  istniał zapisany stan okna. Usunięcie `%APPDATA%\Core2Chat` „naprawiało"
+  problem, co maskowało przyczynę.
+  - Nowy moduł `gui/window_state.py`: wersjonowany format
+    `c2cw1|flags|geometry-b64|sizes`, osobne flagi `maximized`/`fullscreen`,
+    migracja starego formatu, walidacja i odrzucanie danych uszkodzonych,
+    obcych, za dużych i z nowszej wersji — **bez kasowania czegokolwiek**.
+  - `restoreGeometry(QByteArray(...))` bez nieistniejącego symbolu.
+- **`Enter` nie wysyłał wiadomości** (zamiast tego wstawiał nową linię).
+  Przyczyna: w PyQt5 `event.modifiers() & Qt.ShiftModifier` zwraca obiekt flag,
+  nie liczbę, więc `(modifiers & Qt.ShiftModifier) == 0` było zawsze fałszywe.
+  - Nowy moduł `gui/input_policy.py` z jedną wspólną polityką klawiszy
+    (`SubmitPolicy`) i funkcją `has_modifier()` jako jedynym poprawnym testem
+    modyfikatora. Semantyka: `Enter` = wyślij, `Shift+Enter` = nowa linia,
+    `Alt+Enter` = nowa linia, tryb `Ctrl+Enter` zgodny z ustawieniem, `Esc`
+    czyści szkic albo jest przekazywany dalej.
+- **Restartowalność (§26).** Wskaźnik ostatniej rozmowy żył tylko w pamięci,
+  więc restart nie otwierał poprzedniej sesji.
+  - `SessionService.remember_active()` / `active_session()`: SQLite jest źródłem
+    prawdy, `config.json` kopią zapasową; migany wpis nie blokuje startu.
+  - `main.py --smoke-test SEKUNDY`: pełny cykl start → użycie → shutdown z
+    raportem JSON (kryterium BOOT weryfikowalne automatycznie).
+
+### Naprawione — P1
+
+- **Wyciek drzewa widgetów przy zamykaniu okna.** `close()` tylko ukrywało
+  okno, więc każdy cykl zamknij/otwórz zostawiał pełną instancję: zmierzone
+  **+2 okna top-level i +3,6 MB RSS na cykl**, a budowa kolejnego okna
+  degradowała z 17 ms do 244 ms po 12 cyklach. Dodano `WA_DeleteOnClose`
+  oraz `MainWindow.teardown()` (stop timera, czyszczenie transkryptu,
+  odłączenie sygnałów, zwolnienie cache renderera). `ChatService` celowo
+  przeżywa okno — jest współdzielony z tray.
+- **Tray przestawał reagować** (P1.1). Trzy niezależne przyczyny:
+  1. `QSystemTrayIcon.isSystemTrayAvailable()` **segfaultuje** bez
+     `QApplication` — dodany guard (i `RuntimeError` zamiast crasha),
+  2. `QMenu(parent=None)` i ikona bez właściciela mogły zostać zebrane przez GC
+     Pythona, podczas gdy Qt trzymał wskaźnik — właścicielem jest teraz okno,
+     a gdy go brak: `QApplication`,
+  3. callbacki przekazywane jako lambdy tworzyły cykle referencji — zastąpione
+     słownikiem callbacków i `dispatch(name)`; `main.py` przekazuje metody
+     bindowane.
+  Dodatkowo: idempotentny `shutdown()` (odpięcie menu, `deleteLater`, stan
+  `_closed`), a błąd callbacka nie przewraca aplikacji.
+- **Nieczytelna tabela w dark mode** (P1.2): „jasny wiersz + biały tekst".
+  Zmierzone: paleta Qt nie była ustawiana wcale (`Base=#ffffff`,
+  `AlternateBase=#f7f7f7`, `Text=#000000`), a QSS nie definiował
+  `alternate-background-color`.
+  - `gui/theme.py`: jeden zestaw tokenów (`palette_tokens`) zasila i paletę,
+    i stylesheet; `build_palette()` ustawia role Base/AlternateBase/Text/Window/
+    Button/Highlight/HighlightedText/ToolTip/Link oraz stany Disabled i
+    Inactive; `apply_theme()` robi to jednym wywołaniem.
+  - QSS: jawne reguły `normal / :alternate / :hover / :selected /
+    :selected:hover / :selected:!active / :disabled` dla QTableWidget,
+    QTableView, QTreeWidget, QTreeView, QListView, QListWidget + QHeaderView,
+    QTableCornerButton, QMenu, pola read-only i disabled.
+  - Kontrast jest mierzony w testach (różnica luminancji), nie oceniany na oko.
+- **Mylący stan aplikacji** (P1.3): etykieta potrafiła zostać na „Błąd" do końca
+  sesji.
+  - Nowy moduł `services/app_status.py`: jawna maszyna stanów
+    `IDLE / CONNECTING / SENDING / STREAMING / SUCCESS / ERROR / OFFLINE /
+    PAUSED / AUTH_REQUIRED / RATE_LIMITED / CANCELLED`, zadeklarowana tabela
+    przejść, stany przejściowe wracają do `IDLE` po 6 s, stany środowiskowe są
+    trwałe aż do zmiany środowiska, historia i liczniki.
+  - Udane odświeżenie listy modeli czyści stan błędu; przycisk
+    Wyślij/Stop/Ponów jest spójny ze stanem (nie da się mieć „Stop" przy
+    „Gotowy"); status pokazuje upływające sekundy (model potrafi milczeć 75 s).
+
+### Zmienione
+
+- **Quick Chat usunięty** (P2.1). Analiza: osobne okno `Qt.Tool` bez ramki
+  dublowało composer, miało własną obsługę focusa i `Esc`, komplikowało
+  lifecycle tray, a główne okno jest wystarczająco lekkie. Usunięto
+  `gui/quick_chat.py` (237 linii) i 43 odwołania w 7 plikach.
+  - Wartość użytkowa skrótu globalnego zachowana: `Win+C` pokazuje teraz główne
+    okno i ustawia fokus na polu wpisywania (`Application.show_and_focus_main`).
+  - Tray: „Szybki czat" → „Nowa rozmowa i pisz"; środkowy klik = nowa rozmowa
+    + fokus.
+  - Ustawienie `quick_chat_hotkey` jest **migrowane** do `activation_hotkey`
+    przy odczycie konfiguracji, więc upgrade nie gubi skrótu użytkownika.
+- **Filtr niedostępnych modeli** (§6): ustawienie „Ukryj nieobsługiwane modele
+  Gemini" (domyślnie włączone) + przyciski „Zweryfikuj dostępność modeli"
+  (darmowe `countTokens`, bez generowania treści) i „Wyczyść nauczone".
+  Mechanizm jest ogólny: `MODEL DISCOVERY → AVAILABILITY → FILTER → UI`,
+  oparty na faktach z API (HTTP 404 „no longer available to new users",
+  wynik sondy, udana odpowiedź), **bez ani jednej nazwy modelu w kodzie**.
+  Rozdzielono `is_chat_candidate()` (możliwości) od `filter_models()`
+  (dostępność wg ustawienia), więc model niedostępny dla danego klucza nie jest
+  fałszywie oznaczany jako „nieobsługujący czatu" i wraca do selektora po
+  udostępnieniu.
+- **Migracja bazy v2**: tabela `model_availability` (provider, model, available,
+  reason, http_status, verified_at, source). Upgrade z v1 zachowuje dane
+  użytkownika (test `test_upgrade_from_version_1_keeps_user_data`).
+- **Paczka PyInstaller mniejsza o 59 MB**: 182 MB → **123 MB**. Usunięto
+  rozszerzenia PyQt5 i biblioteki Qt, których aplikacja nie importuje
+  (QtQuick, QtQml, Qt3D, QtLocation, QtBluetooth, QtNfc, QtSensors,
+  QtSerialPort, QtTextToSpeech, QtWebChannel, QtWebSockets, QtXmlPatterns,
+  QtSvg, QtHelp, QtOpenGL, QtPrintSupport…) oraz ich wtyczki (`libqvnc`,
+  `libqwebgl`, `libqsvg`, wayland/eglfs/linuxfb). Zachowane celowo:
+  `qwindows`, `qoffscreen`, `qminimal`, `qico` (ikona aplikacji), `qjpeg`/
+  `qgif`/`qwebp` (załączniki), `platformthemes`, `platforminputcontexts`
+  (IME), `styles`, `accessiblebridge`.
+- **`build.py --verify-dist`**: sprawdza domknięcie dynamicznych zależności
+  paczki i rozróżnia „wycięliśmy potrzebną bibliotekę" (błąd builda) od „tego
+  kontener nie ma" (ostrzeżenie). Dzięki temu przycinanie jest bezpieczne.
+- **CI/CD (§18)**: `.github/workflows/ci.yml` — testy (macierz
+  windows-2022/py3.8.10, ubuntu-22.04/py3.8.10, ubuntu-22.04/py3.11),
+  smoke test binarium, benchmark z artefaktem JSON, build onedir, weryfikacja
+  zawartości paczki, draft release dla tagów `v*`. Testy live API wyłącznie
+  przez `workflow_dispatch` z jawnym przełącznikiem.
+  - Python w CI: **3.8.10**, bo to ostatnia wersja 3.8 z oficjalnymi binariami
+    python.org (3.8.11+, w tym 3.8.20, to wydania wyłącznie źródłowe —
+    `actions/setup-python` by się wywróciło). Wersja trzymana w jednym miejscu
+    (`env.PYTHON_VERSION`).
+  - `windows-2019` został wycofany 2025-06-30, więc build leci na
+    `windows-2022`; zgodność z Win7 wynika z pinów i bootloadera PyInstallera
+    (`NTDDI_VERSION=0x06010000`), nie z runnera — i wymaga weryfikacji na
+    sprzęcie docelowym (`.github/RELEASE.md`).
+- **Diagnostyka znowu czytelna**: `sanitize_payload()` maskował wcześniej także
+  pola meta i liczniki (`api_key_present`, `secret_method`, `cached_tokens`),
+  przez co okno diagnostyki pokazywało `<REDACTED>` zamiast faktów. Maskowane
+  są wyłącznie wartości tekstowe pod kluczami typu sekret; pola `*_present`,
+  `*_method`, `*_configured`, `*_status`, `*_count` oraz wartości liczbowe
+  pozostają widoczne. Klucz API nadal jest `<REDACTED>`.
+- **Kursor w polu wpisywania**: `setPlainText()` zostawiał kursor na pozycji 0,
+  więc po przywróceniu szkicu `Shift+Enter` i pisanie wstawiały tekst **przed**
+  istniejącą treścią. `set_text()` ustawia kursor na końcu.
+- **`SettingsDialog`**: `_describe_availability()` był wywoływany przy budowie
+  zakładki „API", a widget powstaje w „Zaawansowane" → `AttributeError` przy
+  każdym otwarciu ustawień.
+- **Single instance**: blokada liczona na katalog danych aplikacji (nie na
+  `$HOME`), więc tryb przenośny nie kłóci się z instalacją w `%APPDATA%`;
+  rozróżnienie „ktoś trzyma blokadę" (EAGAIN/EACCES) od „nie da się sprawdzić"
+  (np. katalog read-only) — w tym drugim przypadku aplikacja startuje zamiast
+  kończyć działanie bez komunikatu.
+- **Timeout strumienia**: pomiar live pokazał 75 s ciszy przed pierwszym
+  chunkiem, więc `DEFAULT_STREAM_READ_TIMEOUT = 300 s` (nie 120 s), a
+  `httpx.Timeout(...)` budowane z `read=` jawnie — argument pozycyjny był
+  po cichu nadpisywany.
+
+### Usunięte
+
+- `gui/quick_chat.py` — Quick Chat (patrz wyżej; skrót globalny przejęło
+  główne okno).
+- `QByteArrayLiteral`, `HOTKEY_ID_QUICK_CHAT`, `#QuickChatFrame` w QSS,
+  akcja „Szybki czat" i sygnał `quick_chat_requested`.
+- 24 wtyczki Qt i ~30 bibliotek Qt z paczki (patrz wyżej).
+
+### Dodane (testy)
+
+- `tests/test_window_state.py` (30) — roundtrip geometrii, maksymalizacja,
+  migrowanie starego formatu, odrzucanie 13 rodzajów uszkodzonych danych,
+  zakaz używania `QByteArrayLiteral` w całym drzewie.
+- `tests/integration/test_restart.py` (8) — 3 cykle START→CLOSE→START na jednym
+  katalogu danych, resize/move, maximize, minimize/restore, uszkodzony snapshot
+  w bazie, start po **SIGKILL** poprzedniego procesu (odzyskiwanie WAL),
+  3 realne uruchomienia `python main.py --smoke-test` w podprocesie.
+- `tests/test_app_status.py` (38) — tabela przejść, stany przejściowe i trwałe,
+  anulowanie przestarzałego timera, liczniki, mapowania błędów.
+- `tests/test_theme_contrast.py` (17) — kontrast jako różnica luminancji dla
+  każdej pary tekst/tło w obu motywach, zgodność QSS z paletą, skan całego CSS
+  pod kątem nieczytelnych par, realny `QTableWidget` z alternating rows.
+- `tests/test_tray.py` (19) — własność obiektów, jednokrotne `build`, dispatch,
+  **25 cykli show/hide** z kontrolą integralności menu, idempotentny shutdown,
+  usunięcie właściciela przed shutdown, routing `activated`, 2 testy subprocess
+  dowodzące braku segfaulta bez `QApplication`.
+- `tests/test_regression_lock.py` (34) — automatyczna blokada regresji funkcji
+  potwierdzonych ręcznie na Windows 7 (§15): ustawienia API, zapis klucza bez
+  plaintextu, discovery + tooltipy, przełączanie modelu, sidebar (rename/delete/
+  pin/archive/fork), `Ctrl+L`, `Enter`/`Shift+Enter`, kompletność skrótów,
+  Markdown, bloki Python i C, kopiowanie kodu przez `c2c://`, załącznik TXT z
+  treścią z testu użytkownika, odrzucanie złych plików, inspektor kontekstu,
+  statystyki, 7 zakładek ustawień, 8 kategorii błędów API z odzyskaniem UI,
+  tray, light mode, `Enter` podczas streamingu (brak drugiego wysłania).
+- `tests/test_ci_workflow.py` (16) — YAML, graf jobów, piny wersji, zakaz
+  wycofanego `windows-2019` (sprawdzane `runs-on`, nie komentarze), zakaz
+  `3.8.20` w kodzie workflow, wymóg `setup-python` w jobie budującym, opt-in
+  testów live, brak sekretów w artefaktach, least-privilege permissions.
+- `tests/test_single_instance.py` (11), rozszerzenia `test_py38_compat.py` (+5:
+  spójność list przycinania, zakaz usuwania `qwindows`/`qico`, `build.py
+  --check`), `test_performance.py` (+2: wyciek okien, mediany zamiast pojedynczego
+  pomiaru).
+- Razem: **496 zebranych = 495 passed + 1 skipped** (ścieżka Win32) w ~85 s.
+  Live smoke: **18 PASS / 0 FAIL / 2 INFO**.
+
+### Znane ograniczenia
+
+- Uruchomienie zbudowanego `.exe` nie jest weryfikowane w środowisku
+  developerskim — wymaga Windows (patrz `.github/RELEASE.md`, lista 10 kroków).
+- RSS w spoczynku 62–63 MB (cel ≈60 MB); po pierwszym żądaniu +11 MB za
+  httpx. Nie „dociągano" liczby do celu.
+- Cancel po stronie serwera (`/interactions/{id}/cancel`) zwraca 404 —
+  przerywanie działa przez zamknięcie strumienia z watchdogiem; UI reaguje
+  natychmiast, pełne zwolnienie gniazda następuje po nagłówkach odpowiedzi.
+- Brak pętli function calling w UI, interfejs tylko PL, jawny context caching
+  nie istnieje w Interactions API.
+
 ## [0.1.0] - 2026-09-29
 
 Pierwsza wersja testowalna. Rdzeń, adapter Gemini, GUI i zestaw testów.
@@ -178,4 +384,5 @@ Pierwsza wersja testowalna. Rdzeń, adapter Gemini, GUI i zestaw testów.
 - Brak pętli function calling w UI (model zdarzeń jest gotowy).
 - Interfejs wyłącznie po polsku.
 
-[0.1.0]: https://github.com/USERNAME/core2chat/releases/tag/v0.1.0
+[0.1.1]: https://github.com/karnyjohnny/Core2Chat/releases/tag/v0.1.1
+[0.1.0]: https://github.com/karnyjohnny/Core2Chat/releases/tag/v0.1.0

@@ -16,7 +16,103 @@ import re
 import shutil
 import subprocess
 import sys
-from typing import List
+from typing import Dict, List
+
+# Plugin files dropped together with their libraries (mirrors pyinstaller.spec;
+# kept in sync by tests/test_py38_compat.py).
+UNWANTED_QT_PLUGIN_FILES = (
+    "libqvnc.so",
+    "libqwebgl.so",
+    "libqsvg.so",
+    "libqsvgicon.so",
+    "libqpdf.so",
+    "libqeglfs.so",
+    "libqlinuxfb.so",
+    "libqminimalegl.so",
+    "libqwayland-egl.so",
+    "libqwayland-generic.so",
+    "libqwayland-xcomposite-egl.so",
+    "libqwayland-xcomposite-glx.so",
+    "libqtga.so",
+    "libqtiff.so",
+    "libqwbmp.so",
+    "libqicns.so",
+    "qsvg.dll",
+    "qsvgicon.dll",
+    "qpdf.dll",
+    "qwebgl.dll",
+    "qvnc.dll",
+    "qtga.dll",
+    "qtiff.dll",
+    "qwbmp.dll",
+    "qicns.dll",
+)
+
+# Qt libraries the bundle must not carry. This list is generated from
+# pyinstaller.spec and kept in sync by
+# tests/test_py38_compat.py::test_bundle_trimming_lists_are_consistent, so
+# --verify-dist can tell "we removed it" from "the host lacks it".
+UNWANTED_QT_LIBS = (
+    "libQt5Bluetooth",
+    "libQt5Help",
+    "libQt5Location",
+    "libQt5Multimedia",
+    "libQt5Nfc",
+    "libQt5OpenGL",
+    "libQt5Positioning",
+    "libQt5PrintSupport",
+    "libQt5Quick",
+    "libQt5Qml",
+    "libQt5RemoteObjects",
+    "libQt5Sensors",
+    "libQt5SerialPort",
+    "libQt5Svg",
+    "libQt5TextToSpeech",
+    "libQt5WebChannel",
+    "libQt5WebSockets",
+    "libQt5Xml",
+    "libQt5XmlPatterns",
+    "libQt5X11Extras",
+    "libQt53D",
+    "libQt5Test",
+    "libQt5Sql",
+    "libQt5Designer",
+    "libQt5Network",
+    "libQt5Concurrent",
+    "libQt5PositioningQuick",
+    "libQt5QuickControls2",
+    "libQt5QuickTemplates2",
+    "libQt5QuickWidgets",
+    "libQt5QmlModels",
+    "libQt5QmlWorkerScript",
+    "libQt5VirtualKeyboard",
+    "Qt5Bluetooth",
+    "Qt5Help",
+    "Qt5Location",
+    "Qt5Multimedia",
+    "Qt5Nfc",
+    "Qt5OpenGL",
+    "Qt5Positioning",
+    "Qt5PrintSupport",
+    "Qt5Quick",
+    "Qt5Qml",
+    "Qt5RemoteObjects",
+    "Qt5Sensors",
+    "Qt5SerialPort",
+    "Qt5Svg",
+    "Qt5TextToSpeech",
+    "Qt5WebChannel",
+    "Qt5WebSockets",
+    "Qt5Xml",
+    "Qt5XmlPatterns",
+    "Qt5X11Extras",
+    "Qt53D",
+    "Qt5Test",
+    "Qt5Sql",
+    "Qt5Designer",
+    "Qt5Network",
+    "Qt5Concurrent",
+)
 
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 SECRET_PATTERNS = (
@@ -104,6 +200,108 @@ def scan_git_history() -> List[str]:
     return offenders[:10]
 
 
+def _system_library_dirs() -> List[str]:
+    """Directories the dynamic loader searches outside the bundle."""
+    candidates = ["/lib", "/lib64", "/usr/lib", "/usr/lib64",
+                  "/usr/lib/x86_64-linux-gnu", "/lib/x86_64-linux-gnu"]
+    ld_conf = "/etc/ld.so.conf"
+    if os.path.isfile(ld_conf):
+        try:
+            with open(ld_conf, "r", encoding="utf-8") as handle:
+                for line in handle:
+                    line = line.strip()
+                    if line and not line.startswith("#") \
+                            and not line.startswith("include"):
+                        candidates.append(line)
+        except OSError:
+            pass
+    extra = os.environ.get("LD_LIBRARY_PATH", "")
+    candidates.extend(part for part in extra.split(os.pathsep) if part)
+    return candidates
+
+
+def _present_on_system(library: str) -> bool:
+    """True when the OS provides the library (so it is not our trimming)."""
+    import glob
+
+    for directory in _system_library_dirs():
+        if glob.glob(os.path.join(directory, library)) or \
+                glob.glob(os.path.join(directory, "**", library),
+                          recursive=False):
+            return True
+    return False
+
+
+def verify_dist(dist_dir: str) -> tuple:
+    """Check the bundle's dynamic dependency closure (POSIX only).
+
+    Trimming unused Qt modules is only safe if nothing that remains links
+    against something that was removed. Every ELF binary in the bundle is
+    inspected and unresolved references are classified:
+
+    * library is in the bundle or provided by the OS  -> fine;
+    * library was dropped by our own trim list        -> **build failure**;
+    * library is simply not installed in this container -> warning, because the
+      target platform (Windows) does not use it at all.
+    """
+    if not os.path.isdir(dist_dir):
+        return False, ["dist directory missing: %s" % dist_dir]
+    if os.name == "nt":
+        return True, ["pominięto: weryfikacja domknięcia wymaga narzędzi ELF; "
+                      "na Windows użyj dumpbin /dependents ręcznie"]
+
+    import subprocess
+
+    present = set()
+    binaries: List[str] = []
+    for base, _dirs, files in os.walk(dist_dir):
+        for name in files:
+            path = os.path.join(base, name)
+            present.add(name)
+            if ".so" in name:
+                binaries.append(path)
+
+    trimmed_prefixes = tuple(
+        name.split("/")[-1] for name in UNWANTED_QT_LIBS)
+    removed_by_us: Dict[str, set] = {}
+    absent_on_host: Dict[str, set] = {}
+
+    for path in binaries:
+        try:
+            completed = subprocess.run(["ldd", path], capture_output=True,
+                                       text=True, timeout=60)
+        except (OSError, subprocess.SubprocessError):
+            continue
+        for line in completed.stdout.splitlines():
+            if "not found" not in line:
+                continue
+            library = line.strip().split()[0]
+            if library in present or library.startswith(("linux-vdso",
+                                                         "ld-linux")):
+                continue
+            owner = os.path.basename(path)
+            if library.startswith(trimmed_prefixes):
+                removed_by_us.setdefault(library, set()).add(owner)
+            elif _present_on_system(library):
+                continue
+            else:
+                absent_on_host.setdefault(library, set()).add(owner)
+
+    notes: List[str] = []
+    notes.append("sprawdzono %d bibliotek ELF w %s" % (len(binaries), dist_dir))
+    for library, users in sorted(absent_on_host.items()):
+        notes.append("OSTRZEŻENIE (brak w tym systemie, nie dotyczy Windows): "
+                     "%s <- %s" % (library, ", ".join(sorted(users)[:3])))
+    if removed_by_us:
+        for library, users in sorted(removed_by_us.items()):
+            notes.append("BŁĄD: usunięto %s, a używa go %s"
+                         % (library, ", ".join(sorted(users)[:3])))
+        return False, notes
+    if not absent_on_host:
+        notes.append("domknięcie zależności OK")
+    return True, notes
+
+
 def run(cmd: List[str]) -> int:
     print("+ " + " ".join(cmd))
     return subprocess.call(cmd, cwd=PROJECT_ROOT)
@@ -115,7 +313,15 @@ def main() -> int:
                         default="release")
     parser.add_argument("--check", action="store_true",
                         help="validate spec + scan for secrets, do not build")
+    parser.add_argument("--verify-dist", action="store_true",
+                        help="check the dynamic dependency closure of dist/")
     args = parser.parse_args()
+
+    if args.verify_dist:
+        ok, notes = verify_dist(os.path.join(PROJECT_ROOT, "dist", "Core2Chat"))
+        for note in notes:
+            print("verify-dist: %s" % note)
+        return 0 if ok else 4
 
     findings, declared = scan_for_secrets()
     if findings:
@@ -174,6 +380,12 @@ def main() -> int:
     code = run(command)
     if code != 0:
         return code
+    ok, notes = verify_dist(os.path.join(PROJECT_ROOT, "dist", "Core2Chat"))
+    for note in notes:
+        print("verify-dist: %s" % note)
+    if not ok:
+        print("ABORT: usunięto bibliotekę, której coś jeszcze używa.")
+        return 4
     out_dir = os.path.join(PROJECT_ROOT, "dist", "Core2Chat")
     print("\nbuild finished: %s" % (out_dir if os.path.isdir(out_dir)
                                     else os.path.join(PROJECT_ROOT, "dist")))

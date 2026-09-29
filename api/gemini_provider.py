@@ -81,6 +81,7 @@ class GeminiProvider(BaseProvider):
                  max_retries: int = DEFAULT_MAX_RETRIES,
                  model_cache: Optional[ModelCacheRepository] = None,
                  provider_cache: Optional[ProviderCacheRepository] = None,
+                 model_availability: Optional[Any] = None,
                  model_ttl_seconds: int = 900,
                  proxy: Optional[str] = None,
                  transport: Optional[Any] = None) -> None:
@@ -93,10 +94,12 @@ class GeminiProvider(BaseProvider):
             read_timeout=read_timeout, max_retries=max_retries,
             provider=self.provider_id, proxy=proxy, transport=transport)
         self.api_version = api_version
+        self.availability = model_availability
         self.discovery = ModelDiscovery(self.client, cache=model_cache,
                                         provider_id=self.provider_id,
                                         api_version=api_version,
-                                        ttl_seconds=model_ttl_seconds)
+                                        ttl_seconds=model_ttl_seconds,
+                                        availability=model_availability)
         self.tokens = TokenCounter(self.client, api_version=api_version)
         self.files = FileService(self.client, api_version=api_version,
                                  provider=self.provider_id)
@@ -149,11 +152,15 @@ class GeminiProvider(BaseProvider):
                     include_preview: bool = True,
                     chat_only: bool = True,
                     hidden: Optional[List[str]] = None,
+                    hide_unavailable: bool = True,
                     offline: bool = False) -> List[ModelInfo]:
         models = self.discovery.list_models(
             force_refresh=force_refresh, include_legacy=include_legacy,
             include_preview=include_preview, chat_only=chat_only,
-            hidden=hidden, offline=offline)
+            hidden=hidden, hide_unavailable=hide_unavailable,
+            offline=offline)
+        log.debug("models.listed count=%d hide_unavailable=%s", len(models),
+                  hide_unavailable)
         for model in models:
             probed = self._probe_results.get(model.model_id)
             if probed:
@@ -233,6 +240,9 @@ class GeminiProvider(BaseProvider):
                         result.status, result.errors[:1])
         else:
             self._observe_capabilities(model_id, result)
+            # A successful response is positive evidence: undo any earlier
+            # "unavailable" learning (plans and rollouts change).
+            self.discovery.mark_available(model_id)
         log.info("interactions.unary model=%s status=%s ms=%.0f in=%d out=%d",
                  model_id, result.status, latency, result.usage.input_tokens,
                  result.usage.output_tokens)
@@ -442,9 +452,52 @@ class GeminiProvider(BaseProvider):
         return key
 
     def _learn_from_availability(self, model_id: str, exc: ProviderError) -> None:
-        """A model the API refuses is removed from the catalogue until refresh."""
+        """A model the API refuses is filtered out - durably, and by rule.
+
+        No model name is hard-coded: the trigger is the API's own answer
+        (MODEL_UNAVAILABLE / HTTP 404), so the same code handles every future
+        access-limited or retired model.
+        """
         if exc.category == "MODEL_UNAVAILABLE" and model_id:
-            self.discovery.mark_unavailable(model_id, exc.message_debug[:120])
+            self.discovery.mark_unavailable(model_id, exc.message_debug[:120],
+                                            http_status=exc.http_status)
+
+    def verify_models(self, model_ids: Optional[List[str]] = None,
+                      limit: int = 12,
+                      progress: Optional[Callable[[float], None]] = None
+                      ) -> Dict[str, bool]:
+        """Probe availability with the free ``countTokens`` call.
+
+        Returns ``{model_id: available}``. Cost: one token-count request per
+        model (no generation, no billing). Used by the settings dialog so the
+        filter can be populated before the user hits an error.
+        """
+        if model_ids is None:
+            model_ids = [m.model_id for m in self.list_models()][:limit]
+        results: Dict[str, bool] = {}
+        total = max(1, len(model_ids))
+        for index, model_id in enumerate(model_ids):
+            results[model_id] = self.verify_model(model_id)
+            if progress is not None:
+                progress((index + 1) / float(total))
+        log.info("models.verified count=%d unavailable=%d", len(results),
+                 len([k for k, v in results.items() if not v]))
+        return results
+
+    def forget_availability(self, model_id: Optional[str] = None) -> int:
+        """Drop learned facts (e.g. after the user upgrades their API plan)."""
+        removed = self.discovery.clear_unavailable(model_id)
+        if self.availability is not None:
+            try:
+                self.availability.forget(self.provider_id, model_id)
+            except Exception as exc:  # pragma: no cover - defensive
+                log.warning("models.forget_failed err=%s", exc)
+        return removed
+
+    def availability_report(self) -> List[Dict[str, Any]]:
+        if self.availability is None:
+            return []
+        return self.availability.all_entries(self.provider_id)
 
     def rejected_parameters(self, model_id: str) -> List[str]:
         return sorted(self._rejected_params.get(model_id, set()))
@@ -454,11 +507,18 @@ class GeminiProvider(BaseProvider):
         try:
             count = self.tokens.count(model_id,
                                       [ContentPart(type="text", text="ping")])
-            return count >= 0
         except ProviderError as exc:
             self._learn_from_availability(model_id, exc)
             log.info("models.verify_failed id=%s cat=%s", model_id, exc.category)
             return False
+        available = count >= 0
+        if self.availability is not None and available:
+            try:
+                self.availability.mark(self.provider_id, model_id, True, "",
+                                       200, "probe")
+            except Exception:  # pragma: no cover - defensive
+                pass
+        return available
 
     # ------------------------------------------------------------ cancellation
     def cancel_request(self, interaction_id: str) -> bool:
@@ -723,6 +783,7 @@ def build_provider(api_key: str = "",
                    max_retries: int = DEFAULT_MAX_RETRIES,
                    model_cache: Optional[ModelCacheRepository] = None,
                    provider_cache: Optional[ProviderCacheRepository] = None,
+                   model_availability: Optional[Any] = None,
                    model_ttl_seconds: int = 900,
                    transport: Optional[Any] = None) -> GeminiProvider:
     """Factory used by the application bootstrap."""
@@ -732,4 +793,5 @@ def build_provider(api_key: str = "",
         read_timeout=read_timeout, stream_read_timeout=stream_read_timeout,
         max_retries=max_retries,
         model_cache=model_cache, provider_cache=provider_cache,
+        model_availability=model_availability,
         model_ttl_seconds=model_ttl_seconds, transport=transport)

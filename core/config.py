@@ -9,10 +9,11 @@ import threading
 from dataclasses import asdict, dataclass, field, fields
 from typing import Any, Dict, List, Optional, Tuple
 
-from core.constants import (ACCENT_COLOR, DEFAULT_CONNECT_TIMEOUT,
+from core.constants import (ACCENT_COLOR, DEFAULT_ACTIVATION_HOTKEY,
+                            DEFAULT_CONNECT_TIMEOUT,
                             DEFAULT_CONTEXT_LIMIT_PERCENT,
                             DEFAULT_FONT_SIZE, DEFAULT_CODE_FONT_SIZE,
-                            DEFAULT_MAX_RETRIES, DEFAULT_QUICK_CHAT_HOTKEY,
+                            DEFAULT_MAX_RETRIES,
                             DEFAULT_READ_TIMEOUT, DEFAULT_SLIDING_WINDOW_MESSAGES,
                             GEMINI_DEFAULT_API_REVISION,
                             GEMINI_DEFAULT_BASE_URL, GEMINI_PROVIDER_ID)
@@ -87,7 +88,7 @@ class AppSettings:
     thinking_level: str = ""
 
     # hotkeys
-    quick_chat_hotkey: str = DEFAULT_QUICK_CHAT_HOTKEY
+    activation_hotkey: str = DEFAULT_ACTIVATION_HOTKEY
     send_with_ctrl_enter: bool = False
 
     # privacy
@@ -112,19 +113,24 @@ class AppSettings:
 
     # advanced
     allow_legacy_models: bool = False
+    hide_unavailable_models: bool = True
     experimental_features: List[str] = field(default_factory=list)
 
     # ------------------------------------------------------------- conversion
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
 
+    #: Old setting names kept only so an upgrade never loses user data.
+    RENAMED_FIELDS = {"quick_chat_hotkey": "activation_hotkey"}
+
     @classmethod
     def from_dict(cls, payload: Dict[str, Any]) -> "AppSettings":
         known = {f.name for f in fields(cls)}
         kwargs: Dict[str, Any] = {}
         for key, value in (payload or {}).items():
-            if key in known:
-                kwargs[key] = value
+            target = cls.RENAMED_FIELDS.get(key, key)
+            if target in known and target not in kwargs:
+                kwargs[target] = value
         return cls(**kwargs)
 
     # ------------------------------------------------------------- validation

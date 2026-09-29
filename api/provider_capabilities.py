@@ -113,7 +113,12 @@ def derive_capabilities(model: ModelInfo,
 
 
 def is_chat_candidate(model: ModelInfo) -> bool:
-    """True when the model can plausibly serve a text chat turn."""
+    """True when the model can plausibly serve a text chat turn.
+
+    Availability is *not* judged here: a model that is merely unavailable for
+    this credential still supports chat, and hiding it is the filter's job
+    (controlled by the user's setting), not a capability statement.
+    """
     methods = set(model.supported_methods)
     if _CHAT_METHOD not in methods:
         return False
@@ -124,8 +129,6 @@ def is_chat_candidate(model: ModelInfo) -> bool:
         return False
     if model.output_token_limit and model.output_token_limit < MIN_OUTPUT_TOKENS_FOR_CHAT:
         return False
-    if model.lifecycle == ModelLifecycle.SHUT_DOWN:
-        return False
     return True
 
 
@@ -133,18 +136,22 @@ def filter_models(models: Iterable[ModelInfo],
                   include_legacy: bool = False,
                   include_preview: bool = True,
                   chat_only: bool = True,
+                  include_unavailable: bool = False,
                   hidden: Optional[Iterable[str]] = None) -> List[ModelInfo]:
     """Apply the user-visible model filter.
 
-    Unavailable/shut-down models never appear because the API omits them; the
-    remaining filters are user preferences, not guesses about capability.
+    Shut-down models are dropped because the API no longer lists them at all.
+    Models proven unavailable *for this credential* are dropped only when
+    ``include_unavailable`` is False (the "Ukryj nieobsługiwane modele"
+    setting); otherwise they stay visible and labelled, so the user can see
+    why a model disappeared.
     """
     hidden_set = set(hidden or ())
     out: List[ModelInfo] = []
     for model in models:
         if model.model_id in hidden_set:
             continue
-        if model.lifecycle == ModelLifecycle.SHUT_DOWN:
+        if model.lifecycle == ModelLifecycle.SHUT_DOWN and not include_unavailable:
             continue
         if model.lifecycle == ModelLifecycle.DEPRECATED and not include_legacy:
             continue
