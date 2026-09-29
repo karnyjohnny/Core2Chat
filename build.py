@@ -153,30 +153,28 @@ def scan_for_secrets() -> tuple:
 
 
 def scan_git_history() -> List[str]:
-    """Scan committed history, not just the working tree.
-
-    A key committed and later deleted is still public once pushed. Each blob is
-    scanned individually so the ``allow-fake-secret`` marker of its own file is
-    honoured (a plain ``git log -p`` loses file boundaries and would flag the
-    deliberate fake credentials used by the redaction tests).
-    """
+    """Scan committed history, not just the working tree."""
     if not os.path.isdir(os.path.join(PROJECT_ROOT, ".git")):
         return []
 
-    def git(args: List[str]) -> str:
+    def git(args: List[str]) -> bytes:
         try:
+            # Używamy capture_output=True bez text=True, aby otrzymywać surowe bajty
             completed = subprocess.run(["git"] + args, cwd=PROJECT_ROOT,
-                                       capture_output=True, text=True,
-                                       timeout=600)
+                                       capture_output=True, timeout=600)
             return completed.stdout
         except (OSError, subprocess.SubprocessError):
-            return ""
+            return b""
 
-    revisions = git(["rev-list", "--all"]).split()
+    # Dekodujemy listę rewizji (bezpieczne ASCII)
+    revisions = git(["rev-list", "--all"]).decode('ascii', errors='ignore').split()
     offenders: List[str] = []
     seen_blobs = set()
+
     for revision in revisions:
-        entries = git(["ls-tree", "-r", revision]).splitlines()
+        # Pobieramy listę plików w rewizji
+        entries = git(["ls-tree", "-r", revision]).decode('utf-8', errors='ignore').splitlines()
+        
         for entry in entries:
             parts = entry.split("\t")
             if len(parts) != 2:
@@ -185,19 +183,35 @@ def scan_git_history() -> List[str]:
             fields = meta.split()
             if len(fields) < 3:
                 continue
+            
             blob = fields[2]
             if blob in seen_blobs:
                 continue
             seen_blobs.add(blob)
+            
+            # Filtrujemy tylko pliki tekstowe (zgodnie z listą rozszerzeń)
             if os.path.splitext(path)[1].lower() not in SCANNED_EXTENSIONS:
                 continue
-            content = git(["cat-file", "blob", blob])
+            
+            # Pobieramy zawartość jako bajty i dekodujemy z ignorowaniem błędów
+            content_bytes = git(["cat-file", "blob", blob])
+            content = content_bytes.decode('utf-8', errors='ignore')
+            
+            # Sprawdzanie wzorców
             if not any(pattern.search(content) for pattern in SECRET_PATTERNS):
                 continue
+            
+            # Ignorowanie plików z markerem bezpieczeństwa
             if ALLOW_MARKER in content:
-                continue          # declared fake fixture
+                continue
+                
             offenders.append("%s (rewizja %s)" % (path, revision[:8]))
-    return offenders[:10]
+            
+            # Ograniczenie liczby zgłoszeń
+            if len(offenders) >= 10:
+                return offenders
+
+    return offenders
 
 
 def _system_library_dirs() -> List[str]:
