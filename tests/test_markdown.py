@@ -1,0 +1,346 @@
+"""Markdown renderer tests: fidelity, safety and streaming behaviour."""
+
+import pytest
+
+from utils.highlight import highlight, languages, normalise_language
+from utils.markdown import (COPY_URI_SCHEME, MarkdownRenderer, escape,
+                            is_safe_url, render, to_markdown_document,
+                            to_plain_text)
+
+
+# ------------------------------------------------------------------- fidelity
+def test_headings_and_paragraphs():
+    html = render("# Tytuł\n\nAkapit pierwszy.\n\nAkapit drugi.").html
+    assert "<h1>Tytuł</h1>" in html
+    assert html.count("<p>") == 2
+
+
+def test_heading_levels_are_capped():
+    assert "<h6>sześć</h6>" in render("###### sześć").html
+    # CommonMark: seven hashes are not a heading, they stay literal text.
+    html = render("####### za dużo").html
+    assert "<h7>" not in html and "<h6>" not in html
+    assert "#" in html
+
+
+def test_inline_formatting():
+    html = render("**pogrubienie** *kursywa* _też_ ~~skreślenie~~ `kod`").html
+    assert "<strong>pogrubienie</strong>" in html
+    assert "<em>kursywa</em>" in html
+    assert "<em>też</em>" in html
+    assert "<s>skreślenie</s>" in html
+    assert '<code class="inline">kod</code>' in html
+
+
+def test_snake_case_is_not_italicised():
+    html = render("zmienna_nazwa_pola i `code_in_backticks`").html
+    assert "<em>" not in html
+
+
+def test_unordered_and_ordered_lists():
+    html = render("- a\n- b\n\n1. jeden\n2. dwa").html
+    assert html.count("<ul>") == 1 and html.count("<ol>") == 1
+    assert html.count("<li>") == 4
+
+
+def test_nested_lists_are_rendered():
+    html = render("- poziom 1\n  - poziom 2\n    - poziom 3").html
+    assert html.count("<ul>") == 3
+    assert "poziom 3" in html
+
+
+def test_task_lists():
+    html = render("- [x] zrobione\n- [ ] do zrobienia").html
+    assert 'class="task"' in html
+    assert "&#9746;" in html and "&#9744;" in html
+
+
+def test_blockquote():
+    html = render("> cytat\n> druga linia").html
+    assert "<blockquote>" in html
+    assert "cytat druga linia" in html
+
+
+def test_horizontal_rule():
+    for marker in ("---", "***", "___"):
+        assert "<hr/>" in render(marker).html
+
+
+def test_table_with_alignment():
+    source = "| a | b | c |\n|:--|:-:|--:|\n| 1 | 2 | 3 |"
+    html = render(source).html
+    assert '<table class="md-table"' in html
+    assert '<th align="left">a</th>' in html
+    assert '<th align="center">b</th>' in html
+    assert '<th align="right">c</th>' in html
+    assert '<td align="right">3</td>' in html
+
+
+def test_code_block_metadata_and_copy_link():
+    result = render("```python\nprint(1)\n```")
+    assert len(result.code_blocks) == 1
+    block = result.code_blocks[0]
+    assert block.language == "python"
+    assert block.code == "print(1)"
+    assert 'href="%s://copy/0"' % COPY_URI_SCHEME in result.html
+    assert '<span class="code-lang">python</span>' in result.html
+    assert "<pre" in result.html
+
+
+def test_multiple_code_blocks_are_indexed():
+    result = render("```python\nx=1\n```\ntekst\n```json\n{}\n```")
+    assert [b.language for b in result.code_blocks] == ["python", "json"]
+    assert "c2c://copy/0" in result.html and "c2c://copy/1" in result.html
+
+
+def test_tilde_fences_are_supported():
+    result = render("~~~bash\necho hi\n~~~")
+    assert result.code_blocks[0].language == "bash"
+    assert "echo hi" in result.html
+
+
+def test_unclosed_fence_does_not_lose_content():
+    result = render("```python\nx = 1\ny = 2")
+    assert result.code_blocks[0].code == "x = 1\ny = 2"
+
+
+def test_indentation_inside_code_is_preserved():
+    code = "def f():\n    if True:\n        return 1"
+    result = render("```python\n%s\n```" % code)
+    assert result.code_blocks[0].code == code
+    # Whitespace survives; keywords are wrapped in spans, so compare the
+    # tag-stripped rendering instead of the raw substring.
+    import re
+    stripped = re.sub(r"<[^>]+>", "", result.html)
+    assert "    if True:" in stripped
+    assert "        return 1" in stripped
+
+
+def test_links_and_autolinks():
+    result = render("[dokumentacja](https://example.com) i "
+                    "<https://auto.example>")
+    assert '<a href="https://example.com">dokumentacja</a>' in result.html
+    assert '<a href="https://auto.example">https://auto.example</a>' in result.html
+    assert result.links == ["https://example.com", "https://auto.example"]
+
+
+def test_link_titles_are_escaped():
+    html = render('[x](https://e.com "tytuł \"z\" cudzysłowem")').html
+    assert "tytuł" in html
+    assert html.count('"') % 2 == 0
+
+
+# --------------------------------------------------------------------- safety
+def test_raw_html_is_escaped():
+    html = render("<script>alert(1)</script>").html
+    assert "<script>" not in html
+    assert "&lt;script&gt;" in html
+
+
+def test_event_handlers_cannot_survive():
+    html = render('<img src=x onerror="alert(1)">').html
+    # The markup is inert text: no element, no attribute, nothing executable.
+    assert "<img" not in html
+    assert "&lt;img" in html
+    assert "<script" not in html
+    # The attribute survives only as inert, escaped text - never as markup.
+    assert 'onerror="alert' not in html
+    assert "&lt;img src=x onerror=" in html
+
+
+def test_javascript_urls_are_neutralised():
+    html = render("[klik](javascript:alert(1))").html
+    assert "javascript:" not in html
+    assert "klik" in html          # label survives as plain text
+
+
+def test_data_urls_are_neutralised():
+    assert is_safe_url("data:text/html,<script>") is False
+    assert is_safe_url("vbscript:x") is False
+    assert is_safe_url("file:///etc/passwd") is False
+    assert is_safe_url("https://ok.example") is True
+    assert is_safe_url("mailto:a@b.c") is True
+    assert is_safe_url("c2c://copy/0") is True
+
+
+def test_remote_images_are_not_fetched():
+    result = render("![kot](https://example.com/cat.png)")
+    assert "<img" not in result.html
+    assert "[obraz: kot]" in result.html
+
+
+def test_nested_formatting_does_not_break_escaping():
+    html = render("**<b>pogrubione & surowe</b>**").html
+    assert "<b>" not in html
+    assert "&lt;b&gt;" in html
+    assert "&amp;" in html
+    assert "<strong>" in html
+
+
+def test_placeholder_injection_is_impossible():
+    """Model output must not be able to forge the internal placeholder token."""
+    html = render("tekst \x000\x00 i jeszcze \x001\x00").html
+    assert "\x00" not in html
+
+
+def test_very_long_input_is_bounded():
+    from utils.markdown import CODE_BLOCK_LIMIT
+    result = render("a" * (CODE_BLOCK_LIMIT + 5000))
+    assert result.truncated is True
+    assert len(result.html) < CODE_BLOCK_LIMIT + 1000
+
+
+def test_escape_helper():
+    assert escape("<a href='x'>&</a>") == \
+        "&lt;a href=&#39;x&#39;&gt;&amp;&lt;/a&gt;"
+    # Quotes must be escaped so interpolated values cannot break attributes.
+    assert escape('"') == "&quot;"
+    assert escape("'") == "&#39;"
+
+
+def test_attribute_injection_through_link_url_is_neutralised():
+    # Malformed link syntax is left as inert, escaped text.
+    html = render('[klik](https://ok.example/" onclick="alert(1))').html
+    assert 'onclick="alert' not in html
+    assert "<a " not in html
+    assert "&quot;" in html
+
+
+def test_attribute_injection_through_link_title_is_neutralised():
+    html = render('[klik](https://ok.example "tytul" onmouseover="x")').html
+    assert 'onmouseover="x"' not in html
+    assert "<a " not in html
+
+
+def test_quotes_inside_a_real_url_stay_single_escaped():
+    html = render('[klik](https://ok.example"x)').html
+    assert '<a href="https://ok.example&quot;x">klik</a>' in html
+    assert "&amp;quot;" not in html          # no double escaping
+
+
+def test_ampersand_in_query_string_is_not_double_escaped():
+    html = render("[a](https://e.com/p?q=1&r=2)").html
+    assert 'href="https://e.com/p?q=1&amp;r=2"' in html
+    assert "&amp;amp;" not in html
+
+
+def test_code_block_language_label_is_escaped():
+    html = render('```py"><script>alert(1)</script>\nprint(1)\n```').html
+    assert "<script>" not in html
+    assert "&lt;script&gt;" in html
+
+
+# ------------------------------------------------------------- streaming mode
+def test_streaming_mode_skips_highlighting():
+    code = "def f():\n    return 1"
+    streaming = render("```python\n%s\n```" % code, finalize=False)
+    final = render("```python\n%s\n```" % code, finalize=True)
+    assert "tok-kw" not in streaming.html
+    assert "tok-kw" in final.html
+    assert streaming.code_blocks[0].code == final.code_blocks[0].code
+
+
+def test_partial_code_block_while_streaming():
+    partial = render("Tekst\n\n```python\ndef f(:")
+    assert partial.code_blocks[0].language == "python"
+    assert partial.code_blocks[0].code == "def f(:"
+    assert "&lt;p&gt;" not in partial.html   # no markup injected by the model
+    assert "<p>Tekst</p>" in partial.html
+
+
+def test_renderer_cache_returns_same_result_and_can_be_cleared():
+    renderer = MarkdownRenderer(cache_size=4)
+    first = renderer.render("# a")
+    second = renderer.render("# a")
+    assert first is second
+    renderer.clear_cache()
+    third = renderer.render("# a")
+    assert third is not first
+    assert third.html == first.html
+
+
+def test_inline_renderer_for_titles():
+    renderer = MarkdownRenderer()
+    assert renderer.render_inline("**ważne** `x`") == \
+        "<strong>ważne</strong> <code class=\"inline\">x</code>"
+
+
+# ----------------------------------------------------------------- plain text
+def test_to_plain_text_strips_markup():
+    source = "# Tytuł\n\n**bold** i `kod`\n\n- [link](https://x.y)\n"
+    text = to_plain_text(source)
+    assert "#" not in text and "**" not in text and "`" not in text
+    assert "link (https://x.y)" in text
+
+
+def test_export_document_has_titles_and_roles():
+    document = to_markdown_document("Moja rozmowa", [
+        ("user", "2026-09-29 10:00", "Cześć"),
+        ("assistant", "2026-09-29 10:01", "Witaj!"),
+    ])
+    assert document.startswith("# Moja rozmowa")
+    assert "## Użytkownik - 2026-09-29 10:00" in document
+    assert "## Asystent - 2026-09-29 10:01" in document
+    assert "Witaj!" in document
+
+
+# ---------------------------------------------------------------- highlighting
+def test_python_highlighting_spans():
+    html = highlight("def foo(x=42):\n    # komentarz\n    return 'tekst'",
+                     "python")
+    assert '<span class="tok-kw">def</span>' in html
+    assert '<span class="tok-fn">foo</span>' in html
+    assert '<span class="tok-com"># komentarz</span>' in html
+    assert '<span class="tok-str">' in html
+    assert '<span class="tok-num">42</span>' in html
+
+
+def test_highlighting_escapes_dangerous_code():
+    html = highlight("<script>alert('x')</script>", "python")
+    assert "<script>" not in html
+    assert "&lt;script&gt;" in html
+
+
+def test_language_aliases():
+    assert normalise_language("py") == "python"
+    assert normalise_language("JS") == "javascript"
+    assert normalise_language("shell") == "bash"
+    assert normalise_language("c++") == "cpp"
+    assert normalise_language("unknown-lang") == "text"
+    assert normalise_language("") == "text"
+
+
+def test_unknown_language_falls_back_to_escaped_text():
+    assert highlight("a < b", "brainfuck") == "a &lt; b"
+
+
+def test_markup_and_data_languages():
+    assert "tok-tag" in highlight("<div class='x'>hi</div>", "html")
+    json_html = highlight('{"a": 1, "b": true}', "json")
+    assert "tok-key" in json_html and "&quot;a&quot;" in json_html
+    assert "tok-kw" in json_html                   # true/false/null
+    assert "tok-com" in highlight("# komentarz\nklucz: 1", "yaml")
+    assert "tok-key" in highlight("body { color: #fff; }", "css")
+    assert "tok-tag" in highlight("[sekcja]\nklucz=1", "ini")
+
+
+def test_sql_and_go_highlighting():
+    upper = highlight("SELECT id FROM users WHERE name = 'x';", "sql")
+    lower = highlight("select id from users where name = 'x';", "sql")
+    # SQL keywords are case-insensitive - both forms must be recognised.
+    assert upper.count("tok-kw") == lower.count("tok-kw") == 3
+    assert "tok-str" in upper
+    go = highlight('func main() { fmt.Println("hi") }', "go")
+    assert "tok-kw" in go and "tok-fn" in go and "tok-bi" in go
+
+
+def test_highlight_is_deterministic_and_bounded():
+    code = "x = 1\n" * 500
+    first = highlight(code, "python")
+    second = highlight(code, "python")
+    assert first == second
+    assert len(languages()) >= 12
+
+
+def test_empty_code():
+    assert highlight("", "python") == ""

@@ -1,0 +1,61 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+wheels/
+pip-wheel-metadata/
+
+# --- virtual environments ---
+.venv/
+venv/
+env/
+ENV/
+
+# --- test / tooling caches ---
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+.tox/
+.nox/
+
+# --- application data (never commit user data or credentials) ---
+data/
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
+secrets.json
+config.json
+portable.flag
+performance.json
+*.log
+
+# --- secrets: belt and braces ---
+.env
+.env.*
+*.pem
+*.key
+credentials*.json
+
+# --- IDE / OS ---
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# --- packaging artifacts ---
+*.spec.bak
+manifest.json
+version_info.txt

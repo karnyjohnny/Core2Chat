@@ -1,0 +1,71 @@
+{
+ "id": "<scrubbed>",
+ "status": "completed",
+ "usage": {
+  "total_tokens": 19,
+  "total_input_tokens": 18,
+  "input_tokens_by_modality": [
+   {
+    "modality": "text",
+    "tokens": 18
+   }
+  ],
+  "total_cached_tokens": 0,
+  "total_output_tokens": 1,
+  "total_tool_use_tokens": 0,
+  "total_thought_tokens": 0,
+  "raw_prompt_token": 53,
+  "model_invocation_token_counts": [
+   {
+    "prompt_tokens_details": [
+     {
+      "modality": "text",
+      "tokens": 53
+     }
+    ],
+    "candidates_tokens_details": [
+     {
+      "modality": "text",
+      "tokens": 5
+     }
+    ]
+   }
+  ],
+  "non_grounding_model_invocation_token_counts": [
+   {
+    "prompt_tokens_details": [
+     {
+      "modality": "text",
+      "tokens": 53
+     }
+    ],
+    "candidates_tokens_details": [
+     {
+      "modality": "text",
+      "tokens": 5
+     }
+    ]
+   }
+  ]
+ },
+ "created": "2026-09-29T12:49:48Z",
+ "updated": "2026-09-29T12:49:48Z",
+ "service_tier": "standard",
+ "steps": [
+  {
+   "signature": "<scrubbed>",
+   "type": "thought"
+  },
+  {
+   "content": [
+    {
+     "text": "OK",
+     "type": "text"
+    }
+   ],
+   "type": "model_output"
+  }
+ ],
+ "object": "interaction",
+ "model": "gemini-3.5-flash-lite"
+}

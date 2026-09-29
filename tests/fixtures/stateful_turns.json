@@ -1,0 +1,144 @@
+{
+ "t1": {
+  "id": "<scrubbed>",
+  "status": "completed",
+  "usage": {
+   "total_tokens": 28,
+   "total_input_tokens": 9,
+   "input_tokens_by_modality": [
+    {
+     "modality": "text",
+     "tokens": 9
+    }
+   ],
+   "total_cached_tokens": 0,
+   "total_output_tokens": 19,
+   "total_tool_use_tokens": 0,
+   "total_thought_tokens": 0,
+   "raw_prompt_token": 40,
+   "model_invocation_token_counts": [
+    {
+     "prompt_tokens_details": [
+      {
+       "modality": "text",
+       "tokens": 40
+      }
+     ],
+     "candidates_tokens_details": [
+      {
+       "modality": "text",
+       "tokens": 23
+      }
+     ]
+    }
+   ],
+   "non_grounding_model_invocation_token_counts": [
+    {
+     "prompt_tokens_details": [
+      {
+       "modality": "text",
+       "tokens": 40
+      }
+     ],
+     "candidates_tokens_details": [
+      {
+       "modality": "text",
+       "tokens": 23
+      }
+     ]
+    }
+   ]
+  },
+  "created": "2026-09-29T12:49:29Z",
+  "updated": "2026-09-29T12:49:29Z",
+  "service_tier": "standard",
+  "steps": [
+   {
+    "signature": "<scrubbed>",
+    "type": "thought"
+   },
+   {
+    "content": [
+     {
+      "text": "Got it, Bob! I'll remember your name. How can I help you today?",
+      "type": "text"
+     }
+    ],
+    "type": "model_output"
+   }
+  ],
+  "object": "interaction",
+  "model": "gemini-3.5-flash-lite"
+ },
+ "t2": {
+  "id": "<scrubbed>",
+  "status": "completed",
+  "usage": {
+   "total_tokens": 40,
+   "total_input_tokens": 35,
+   "input_tokens_by_modality": [
+    {
+     "modality": "text",
+     "tokens": 35
+    }
+   ],
+   "total_cached_tokens": 0,
+   "total_output_tokens": 5,
+   "total_tool_use_tokens": 0,
+   "total_thought_tokens": 0,
+   "raw_prompt_token": 78,
+   "model_invocation_token_counts": [
+    {
+     "prompt_tokens_details": [
+      {
+       "modality": "text",
+       "tokens": 78
+      }
+     ],
+     "candidates_tokens_details": [
+      {
+       "modality": "text",
+       "tokens": 9
+      }
+     ]
+    }
+   ],
+   "non_grounding_model_invocation_token_counts": [
+    {
+     "prompt_tokens_details": [
+      {
+       "modality": "text",
+       "tokens": 78
+      }
+     ],
+     "candidates_tokens_details": [
+      {
+       "modality": "text",
+       "tokens": 9
+      }
+     ]
+    }
+   ]
+  },
+  "created": "2026-09-29T12:49:40Z",
+  "updated": "2026-09-29T12:49:40Z",
+  "service_tier": "standard",
+  "steps": [
+   {
+    "signature": "<scrubbed>",
+    "type": "thought"
+   },
+   {
+    "content": [
+     {
+      "text": "Your name is Bob!",
+      "type": "text"
+     }
+    ],
+    "type": "model_output"
+   }
+  ],
+  "object": "interaction",
+  "model": "gemini-3.5-flash-lite"
+ }
+}

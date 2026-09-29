@@ -1,0 +1,33 @@
+event: interaction.created
+data: {"interaction": {"id": "<scrubbed>", "status": "in_progress", "object": "interaction", "model": "gemini-3.5-flash-lite"}, "event_type": "interaction.created"}
+
+event: interaction.status_update
+data: {"interaction_id": "v1_SCRUBBED_INTERACTION_ID", "status": "in_progress", "event_type": "interaction.status_update"}
+
+event: step.start
+data: {"index": 0, "step": {"type": "thought"}, "event_type": "step.start"}
+
+event: step.delta
+data: {"index": 0, "delta": {"type": "thought_signature", "signature": "<scrubbed>"}, "event_type": "step.delta"}
+
+event: step.stop
+data: {"index": 0, "event_type": "step.stop"}
+
+event: step.start
+data: {"index": 1, "step": {"type": "model_output"}, "event_type": "step.start"}
+
+event: step.delta
+data: {"index": 1, "delta": {"text": "1, 2, 3, 4, 5, ", "type": "text"}, "event_type": "step.delta"}
+
+event: step.delta
+data: {"index": 1, "delta": {"text": "6, 7, 8, 9, 10, 11, 12", "type": "text"}, "event_type": "step.delta"}
+
+event: step.stop
+data: {"index": 1, "event_type": "step.stop"}
+
+event: interaction.completed
+data: {"interaction": {"id": "<scrubbed>", "status": "completed", "usage": {"total_tokens": 50, "total_input_tokens": 13, "input_tokens_by_modality": [{"modality": "text", "tokens": 13}], "total_cached_tokens": 0, "total_output_tokens": 37, "total_tool_use_tokens": 0, "total_thought_tokens": 0, "raw_prompt_token": 44, "model_invocation_token_counts": [{"prompt_tokens_details": [{"modality": "text", "tokens": 44}], "candidates_tokens_details": [{"modality": "text", "tokens": 41}]}], "non_grounding_model_invocation_token_counts": [{"prompt_tokens_details": [{"modality": "text", "tokens": 44}], "candidates_tokens_details": [{"modality": "text", "tokens": 41}]}]}, "created": "2026-09-29T12:46:35Z", "updated": "2026-09-29T12:46:35Z", "service_tier": "standard", "object": "interaction", "model": "gemini-3.5-flash-lite"}, "event_type": "interaction.completed"}
+
+event: done
+data: [DONE]
+

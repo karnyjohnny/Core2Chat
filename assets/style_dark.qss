@@ -1,0 +1,424 @@
+/* Core2Chat dark theme.
+   Placeholders {{ACCENT}}, {{BG}}, {{SIDEBAR}}, {{TEXT}}, {{MUTED}},
+   {{SURFACE}}, {{BORDER}}, {{CODE_BG}} are substituted at runtime by
+   gui/theme.py so the accent colour stays user-configurable.
+   Design rules: flat, dense, crisp - no gradients, no big radii, no shadows. */
+
+QWidget {
+    background-color: {{BG}};
+    color: {{TEXT}};
+    font-family: "Segoe UI", "DejaVu Sans", sans-serif;
+    font-size: {{FONT_SIZE}}pt;
+}
+
+QMainWindow::separator {
+    background: {{BORDER}};
+    width: 1px;
+    height: 1px;
+}
+
+QToolTip {
+    background-color: {{SURFACE}};
+    color: {{TEXT}};
+    border: 1px solid {{BORDER}};
+    padding: 3px 5px;
+}
+
+/* ------------------------------------------------------------ sidebar */
+#Sidebar {
+    background-color: {{SIDEBAR}};
+    border-right: 1px solid {{BORDER}};
+}
+
+#SidebarHeader {
+    background-color: {{SIDEBAR}};
+    border-bottom: 1px solid {{BORDER}};
+    padding: 4px;
+}
+
+QListWidget {
+    background-color: {{SIDEBAR}};
+    border: none;
+    outline: 0;
+    padding: 2px;
+}
+
+QListWidget::item {
+    padding: 5px 6px;
+    border: none;
+    border-radius: 2px;
+    color: {{TEXT}};
+}
+
+QListWidget::item:hover {
+    background-color: {{SURFACE}};
+}
+
+QListWidget::item:selected {
+    background-color: {{ACCENT}};
+    color: #ffffff;
+}
+
+QListWidget::item:selected:!active {
+    background-color: {{ACCENT}};
+    color: #ffffff;
+}
+
+/* ------------------------------------------------------------- inputs */
+QLineEdit, QTextEdit, QPlainTextEdit, QSpinBox, QDoubleSpinBox, QComboBox,
+QListWidget#PinnedList {
+    background-color: {{SURFACE}};
+    border: 1px solid {{BORDER}};
+    border-radius: 2px;
+    padding: 3px 5px;
+    selection-background-color: {{ACCENT}};
+    selection-color: #ffffff;
+}
+
+QLineEdit:focus, QTextEdit:focus, QPlainTextEdit:focus, QComboBox:focus {
+    border: 1px solid {{ACCENT}};
+}
+
+QLineEdit:disabled, QTextEdit:disabled, QComboBox:disabled {
+    color: {{MUTED}};
+    background-color: {{BG}};
+}
+
+QComboBox::drop-down {
+    border: none;
+    width: 18px;
+}
+
+QComboBox QAbstractItemView {
+    background-color: {{SURFACE}};
+    border: 1px solid {{BORDER}};
+    selection-background-color: {{ACCENT}};
+    selection-color: #ffffff;
+    outline: 0;
+}
+
+/* ------------------------------------------------------------ buttons */
+QPushButton {
+    background-color: {{SURFACE}};
+    border: 1px solid {{BORDER}};
+    border-radius: 2px;
+    padding: 4px 10px;
+    min-height: 16px;
+}
+
+QPushButton:hover {
+    border-color: {{ACCENT}};
+}
+
+QPushButton:pressed {
+    background-color: {{BORDER}};
+}
+
+QPushButton:disabled {
+    color: {{MUTED}};
+    border-color: {{BORDER}};
+}
+
+QPushButton#PrimaryButton {
+    background-color: {{ACCENT}};
+    border: 1px solid {{ACCENT}};
+    color: #ffffff;
+    font-weight: 600;
+}
+
+QPushButton#PrimaryButton:disabled {
+    background-color: {{SURFACE}};
+    color: {{MUTED}};
+    border-color: {{BORDER}};
+}
+
+QPushButton#DangerButton:hover {
+    border-color: #c0392b;
+    color: #ff8b7a;
+}
+
+/* Icon-only compact buttons used in message hover toolbars */
+QPushButton#IconButton {
+    background: transparent;
+    border: none;
+    padding: 1px 4px;
+    color: {{MUTED}};
+}
+
+QPushButton#IconButton:hover {
+    background-color: {{SURFACE}};
+    color: {{TEXT}};
+}
+
+/* --------------------------------------------------------------- chat */
+#ChatScroll, #ChatScrollArea {
+    background-color: {{BG}};
+    border: none;
+}
+
+QScrollArea {
+    border: none;
+    background: transparent;
+}
+
+QScrollBar:vertical {
+    background: {{BG}};
+    width: 10px;
+    margin: 0;
+    border: none;
+}
+
+QScrollBar::handle:vertical {
+    background: {{BORDER}};
+    min-height: 24px;
+    border-radius: 2px;
+}
+
+QScrollBar::handle:vertical:hover {
+    background: {{MUTED}};
+}
+
+QScrollBar:horizontal {
+    background: {{BG}};
+    height: 10px;
+    margin: 0;
+    border: none;
+}
+
+QScrollBar::handle:horizontal {
+    background: {{BORDER}};
+    min-width: 24px;
+    border-radius: 2px;
+}
+
+QScrollBar::add-line, QScrollBar::sub-line {
+    width: 0;
+    height: 0;
+}
+
+QScrollBar::add-page, QScrollBar::sub-page {
+    background: none;
+}
+
+/* ---------------------------------------------------------- messages */
+#MessageUser {
+    background-color: {{SURFACE}};
+    border-left: 2px solid {{ACCENT}};
+}
+
+#MessageAssistant {
+    background-color: {{BG}};
+    border-left: 2px solid {{BORDER}};
+}
+
+#MessageFailed {
+    border-left: 2px solid #c0392b;
+}
+
+#MessageMeta {
+    color: {{MUTED}};
+    font-size: {{META_FONT_SIZE}}pt;
+}
+
+#MessageError {
+    color: #ff8b7a;
+    font-size: {{META_FONT_SIZE}}pt;
+}
+
+QTextBrowser#MessageBody {
+    background-color: transparent;
+    border: none;
+    padding: 0;
+    selection-background-color: {{ACCENT}};
+}
+
+/* Markdown content rendered inside QTextDocument */
+QTextBrowser#MessageBody a { color: {{ACCENT}}; text-decoration: none; }
+QTextBrowser#MessageBody h1 { font-size: 15pt; margin: 6px 0 4px 0; }
+QTextBrowser#MessageBody h2 { font-size: 13pt; margin: 6px 0 4px 0; }
+QTextBrowser#MessageBody h3 { font-size: 12pt; margin: 5px 0 3px 0; }
+QTextBrowser#MessageBody h4, QTextBrowser#MessageBody h5,
+QTextBrowser#MessageBody h6 { font-size: 11pt; margin: 4px 0 2px 0; }
+QTextBrowser#MessageBody p { margin: 2px 0; }
+QTextBrowser#MessageBody blockquote {
+    color: {{MUTED}};
+    border-left: 2px solid {{BORDER}};
+    margin: 3px 0 3px 4px;
+    padding-left: 6px;
+}
+QTextBrowser#MessageBody pre {
+    background-color: {{CODE_BG}};
+    border: 1px solid {{BORDER}};
+    margin: 3px 0;
+    padding: 4px;
+    font-family: "Cascadia Mono", "Consolas", "DejaVu Sans Mono", monospace;
+    font-size: {{CODE_FONT_SIZE}}pt;
+}
+QTextBrowser#MessageBody code {
+    font-family: "Cascadia Mono", "Consolas", "DejaVu Sans Mono", monospace;
+    font-size: {{CODE_FONT_SIZE}}pt;
+}
+QTextBrowser#MessageBody code.inline {
+    background-color: {{CODE_BG}};
+    padding: 0 2px;
+}
+QTextBrowser#MessageBody p.code-head {
+    background-color: {{CODE_HEAD_BG}};
+    border: 1px solid {{BORDER}};
+    border-bottom: none;
+    margin: 4px 0 0 0;
+    padding: 1px 4px;
+    font-size: {{META_FONT_SIZE}}pt;
+    color: {{MUTED}};
+}
+QTextBrowser#MessageBody span.code-lang { color: {{MUTED}}; font-weight: 600; }
+QTextBrowser#MessageBody span.code-lines { color: {{MUTED}}; margin-left: 6px; }
+QTextBrowser#MessageBody a.code-copy { color: {{ACCENT}}; margin-left: 10px; }
+QTextBrowser#MessageBody table.md-table {
+    border-collapse: collapse;
+    margin: 4px 0;
+}
+QTextBrowser#MessageBody table.md-table th {
+    background-color: {{CODE_BG}};
+    border: 1px solid {{BORDER}};
+    padding: 2px 6px;
+    font-weight: 600;
+}
+QTextBrowser#MessageBody table.md-table td {
+    border: 1px solid {{BORDER}};
+    padding: 2px 6px;
+}
+
+/* Syntax highlighting tokens */
+.tok-kw  { color: #569cd6; font-weight: 600; }
+.tok-bi  { color: #4ec9b0; }
+.tok-str { color: #ce9178; }
+.tok-com { color: #6a9955; font-style: italic; }
+.tok-num { color: #b5cea8; }
+.tok-fn  { color: #dcdcaa; }
+.tok-dec { color: #c586c0; }
+.tok-tag { color: #569cd6; }
+.tok-attr{ color: #9cdcfe; }
+.tok-key { color: #9cdcfe; }
+.tok-pun { color: #808080; }
+
+/* -------------------------------------------------------------- misc */
+#TopBar {
+    background-color: {{SIDEBAR}};
+    border-bottom: 1px solid {{BORDER}};
+}
+
+#StatusBar {
+    background-color: {{SIDEBAR}};
+    border-top: 1px solid {{BORDER}};
+    color: {{MUTED}};
+}
+
+#StatusBar QLabel { color: {{MUTED}}; padding: 0 6px; }
+
+#InputPanel {
+    background-color: {{BG}};
+    border-top: 1px solid {{BORDER}};
+}
+
+#SmartInput {
+    background-color: {{SURFACE}};
+    border: 1px solid {{BORDER}};
+    border-radius: 2px;
+    padding: 4px;
+    font-size: {{FONT_SIZE}}pt;
+}
+
+#SmartInput:focus { border: 1px solid {{ACCENT}}; }
+
+QLabel#AttachmentChip {
+    background-color: {{SURFACE}};
+    border: 1px solid {{BORDER}};
+    border-radius: 2px;
+    padding: 2px 6px;
+    color: {{TEXT}};
+}
+
+QLabel#AttachmentChipFailed {
+    border: 1px solid #c0392b;
+    color: #ff8b7a;
+}
+
+QLabel#ContextMeterWarning { color: #e0a33e; }
+QLabel#ContextMeterCritical { color: #ff8b7a; }
+
+QLabel#StatusOnline { color: #4ec9b0; }
+QLabel#StatusOffline { color: {{MUTED}}; }
+QLabel#StatusError { color: #ff8b7a; }
+QLabel#StatusBusy { color: #e0a33e; }
+
+QProgressBar {
+    background-color: {{SURFACE}};
+    border: 1px solid {{BORDER}};
+    border-radius: 2px;
+    height: 8px;
+    text-align: center;
+    color: transparent;
+}
+
+QProgressBar::chunk { background-color: {{ACCENT}}; }
+
+QTabWidget::pane { border: 1px solid {{BORDER}}; top: -1px; }
+QTabBar::tab {
+    background: {{SURFACE}};
+    border: 1px solid {{BORDER}};
+    padding: 4px 10px;
+    margin-right: 2px;
+}
+QTabBar::tab:selected { background: {{BG}}; border-bottom-color: {{BG}}; }
+
+QCheckBox, QRadioButton { spacing: 5px; }
+QCheckBox::indicator, QRadioButton::indicator {
+    width: 13px; height: 13px;
+    border: 1px solid {{BORDER}};
+    background: {{SURFACE}};
+}
+QCheckBox::indicator:checked { background: {{ACCENT}}; border-color: {{ACCENT}}; }
+QRadioButton::indicator { border-radius: 7px; }
+QRadioButton::indicator:checked { background: {{ACCENT}}; border-color: {{ACCENT}}; }
+
+QGroupBox {
+    border: 1px solid {{BORDER}};
+    margin-top: 8px;
+    padding-top: 6px;
+}
+QGroupBox::title { subcontrol-origin: margin; left: 8px; padding: 0 3px; }
+
+QMenu {
+    background-color: {{SURFACE}};
+    border: 1px solid {{BORDER}};
+    padding: 2px;
+}
+QMenu::item { padding: 3px 18px; border-radius: 2px; }
+QMenu::item:selected { background-color: {{ACCENT}}; color: #ffffff; }
+QMenu::separator { height: 1px; background: {{BORDER}}; margin: 3px 6px; }
+
+QSplitter::handle { background-color: {{BORDER}}; }
+QSplitter::handle:horizontal { width: 1px; }
+QSplitter::handle:vertical { height: 1px; }
+
+QHeaderView::section {
+    background-color: {{SURFACE}};
+    border: none;
+    border-bottom: 1px solid {{BORDER}};
+    padding: 3px 6px;
+    color: {{MUTED}};
+}
+
+QTableWidget { gridline-color: {{BORDER}}; border: 1px solid {{BORDER}}; }
+QTableWidget::item:selected { background-color: {{ACCENT}}; color: #ffffff; }
+
+#QuickChatFrame {
+    background-color: {{SURFACE}};
+    border: 1px solid {{ACCENT}};
+}
+
+#EmptyStateLabel {
+    color: {{MUTED}};
+    font-size: 11pt;
+}

@@ -1,0 +1,98 @@
+{
+ "bad_model": [
+  404,
+  {
+   "error": {
+    "message": "Model 'gemini-does-not-exist-9' not found. Did you mean 'gemini-pro-latest'? Please verify the model name against the supported list: https://ai.google.dev/gemini-api/docs/models",
+    "code": "not_found"
+   }
+  }
+ ],
+ "bad_key": [
+  400,
+  {
+   "error": {
+    "code": 400,
+    "message": "API key not valid. Please pass a valid API key.",
+    "status": "INVALID_ARGUMENT",
+    "details": [
+     {
+      "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+      "reason": "API_KEY_INVALID",
+      "domain": "googleapis.com",
+      "metadata": {
+       "service": "generativelanguage.googleapis.com",
+       "consumer": "projects/000000"
+      }
+     }
+    ]
+   }
+  }
+ ],
+ "bad_body": [
+  400,
+  {
+   "error": {
+    "message": "Unknown parameter 'nonsense_field'.",
+    "code": "invalid_request"
+   }
+  }
+ ],
+ "context_too_large": [
+  400,
+  {
+   "error": {
+    "message": "Prompt token count 2000000 exceeds the model input token limit of 1048576.",
+    "code": "invalid_request"
+   }
+  }
+ ],
+ "rate_limit": [
+  429,
+  {
+   "error": {
+    "code": 429,
+    "message": "You exceeded your current quota. Please check your plan and billing details.",
+    "status": "RESOURCE_EXHAUSTED"
+   }
+  }
+ ],
+ "server_error": [
+  503,
+  {
+   "error": {
+    "code": 503,
+    "message": "Model server is temporarily overloaded. Please try again later.",
+    "status": "UNAVAILABLE"
+   }
+  }
+ ],
+ "cancel_not_found": [
+  404,
+  {
+   "error": {
+    "message": "Requested entity was not found.",
+    "code": "not_found"
+   }
+  }
+ ],
+ "image_mime_missing": [
+  400,
+  {
+   "error": {
+    "message": "Missing/unsupported mime_type in image content.",
+    "code": "invalid_request"
+   }
+  }
+ ],
+ "count_tokens_unknown_field": [
+  400,
+  {
+   "error": {
+    "code": 400,
+    "message": "Invalid JSON payload received. Unknown name \"systemInstruction\": Cannot find field.",
+    "status": "INVALID_ARGUMENT"
+   }
+  }
+ ]
+}

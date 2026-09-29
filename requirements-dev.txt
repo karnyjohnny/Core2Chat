@@ -1,0 +1,17 @@
+# Core2Chat — development dependencies (never shipped in the executable)
+#
+# Install with:  python -m pip install -r requirements-dev.txt
+#
+# PyInstaller pinning rationale (spec §54):
+#   * 5.13.2 is the last release of the 5.x line and supports Python 3.8.
+#   * PyInstaller 6.x still compiles its Windows bootloaders with
+#     NTDDI_VERSION=0x06010000 / _WIN32_WINNT=0x0601 (Windows 7 feature level),
+#     but the project officially supports Windows 8+ only. For a Windows 7
+#     target, build with 5.13.2 *on* Windows 7 (or the oldest OS you support):
+#     an executable built on a newer Windows is often not backwards compatible.
+
+-r requirements.txt
+
+pytest==7.4.4
+pytest-qt==4.2.0
+pyinstaller==5.13.2
