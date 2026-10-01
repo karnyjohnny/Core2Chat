@@ -178,12 +178,15 @@ def test_requirements_pin_the_target_versions():
     content = read(path)
     assert "PyQt5==5.15.11" in content
     assert "httpx==0.28.1" in content
+    assert "Pygments==2.17.2" in content
     # Only requirement lines matter: comments legitimately *name* the forbidden
-    # stacks while explaining the policy.
+    # stacks while explaining the policy. The runtime trio is closed: PyQt5
+    # (GUI), httpx (HTTP), Pygments (syntax highlighting, user-approved 0.1.2).
     packages = [line.strip() for line in content.splitlines()
                 if line.strip() and not line.strip().startswith("#")
                 and not line.strip().startswith("-r")]
-    assert sorted(packages) == ["PyQt5==5.15.11", "httpx==0.28.1"], packages
+    assert sorted(packages) == ["PyQt5==5.15.11", "Pygments==2.17.2",
+                                "httpx==0.28.1"], packages
     for banned in ("PyQt6", "PySide", "QtWebEngine", "qasync"):
         assert not any(pkg.lower().startswith(banned.lower())
                        for pkg in packages)
@@ -198,6 +201,11 @@ def test_runtime_dependency_count_stays_minimal():
                 if line.strip() and not line.strip().startswith("#")
                 and not line.strip().startswith("-r")]
     assert len(packages) <= 4, "runtime deps grew: %s" % packages
+    pinned = dict(item.split("==") for item in packages if "==" in item)
+    assert pinned.get("Pygments") == "2.17.2", (
+        "kolorowanie składni wymaga Pygments (utils/highlight.backend() bez "
+        "niego degraduje do 'plain' - kod bez kolorów); pin: %r"
+        % pinned.get("Pygments"))
 
 
 def test_build_script_scans_working_tree_and_history():

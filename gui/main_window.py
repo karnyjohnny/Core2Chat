@@ -20,6 +20,8 @@ from PyQt5.QtWidgets import (QAction, QApplication, QDialog, QFileDialog,
                              QMessageBox, QPushButton, QSizePolicy, QSplitter,
                              QVBoxLayout, QWidget)
 
+from core.config import (CLOSE_ACTION_ASK, CLOSE_ACTION_EXIT,
+                         CLOSE_ACTION_MINIMIZE, close_action_to_store)
 from core.constants import (APP_NAME, APP_VERSION, MESSAGES_PAGE_SIZE)
 from core.logging_setup import get_logger
 from gui.attachment_widget import AttachmentWidget
@@ -160,6 +162,9 @@ class MainWindow(QMainWindow):
         right_layout.setSpacing(0)
 
         self.chat_widget = ChatWidget(renderer=self.renderer,
+                                      code_font_size=int(
+                                          self.settings.code_font_size),
+                                      light=not self.settings.dark_theme,
                                       page_size=MESSAGES_PAGE_SIZE)
         self.chat_widget.action_requested.connect(self._on_message_action)
         self.chat_widget.load_older_requested.connect(self.load_older_messages)
@@ -273,10 +278,17 @@ class MainWindow(QMainWindow):
         self.chat_widget.set_show_thinking(settings.show_thinking)
         self.chat_widget.set_spacing(settings.message_spacing == "compact")
         self.chat_widget.set_auto_scroll(settings.auto_scroll)
+        # The transcript re-colours itself: code highlighting lives inside each
+        # QTextDocument, which no application stylesheet can reach.
+        self.chat_widget.set_theme(light=not settings.dark_theme,
+                                   code_font_size=settings.code_font_size)
         self.input.set_ctrl_enter_sends(settings.send_with_ctrl_enter)
         self._splitter.setSizes([int(settings.sidebar_width), 900])
         if settings.model_id:
             self.model_selector.set_current_model(settings.model_id)
+        apply_hook = getattr(self, "tray_settings_changed", None)
+        if callable(apply_hook):
+            apply_hook()
         repolish(self)
 
     # -------------------------------------------------------------- sessions
@@ -1054,16 +1066,74 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:  # noqa: N802 (Qt naming)
         self._flush_draft()
-        if self.settings.close_to_tray and _tray_available():
+        action = self.resolve_close_action()
+        if action == CLOSE_ACTION_MINIMIZE:
             # Hide only: the window stays alive so the tray can restore it.
             event.ignore()
+            self._minimize_window()
+            return
+        if action == CLOSE_ACTION_EXIT:
+            self.shutdown_requested.emit()
+            self.teardown()
+            event.accept()
+            return
+        event.ignore()
+
+    def resolve_close_action(self) -> str:
+        """Decide what X does, asking when the user wants to be asked.
+
+        ``settings.close_action`` is ``ask`` by default, so the first X press
+        shows the dialog. "Zapamiętaj wybór" writes the answer back through
+        :meth:`remember_close_action`; without it the dialog returns every time.
+        A cancelled dialog leaves the window open.
+        """
+        configured = (self.settings.close_action or CLOSE_ACTION_ASK)
+        if configured != CLOSE_ACTION_ASK:
+            return configured
+        from gui.close_dialog import CHOICE_CANCEL, CloseActionDialog
+
+        dialog = CloseActionDialog(_tray_available(), self)
+        dialog.exec_()
+        choice = dialog.chosen_action()
+        if choice == CHOICE_CANCEL:
+            return CHOICE_CANCEL
+        if dialog.should_remember():
+            self.remember_close_action(choice)
+        return choice
+
+    def remember_close_action(self, choice: str) -> bool:
+        """Persist the close behaviour (never silently, never with data loss)."""
+        value = close_action_to_store(choice)
+        self.settings.close_action = value
+        # Keep the legacy flag consistent so a downgrade still behaves sanely.
+        self.settings.close_to_tray = value == CLOSE_ACTION_MINIMIZE
+        ok = True
+        save = getattr(self.context, "save_settings", None)
+        if callable(save):
+            try:
+                result = save(self.settings)
+                ok = bool(result[0]) if isinstance(result, tuple) else bool(result)
+            except Exception as exc:  # pragma: no cover - settings write guard
+                log.warning("ui.close_action_save_failed err=%s", exc)
+                ok = False
+        if not ok:
+            self._status_session.setText(
+                "Nie udało się zapisać wyboru - program zapyta ponownie.")
+        return ok
+
+    def _minimize_window(self) -> None:
+        """Hide to tray when possible, else minimize to the taskbar."""
+        if _tray_available():
             self.hide()
             self._status_session.setText(
                 "Aplikacja działa w zasobniku systemowym.")
             return
-        self.shutdown_requested.emit()
-        self.teardown()
-        event.accept()
+        self.showMinimized()
+        self._status_session.setText("Okno zminimalizowane (brak zasobnika).")
+
+    def minimize_to_tray(self) -> None:
+        """Public entry point for the tray/menu "minimalizuj" paths."""
+        self._minimize_window()
 
     def teardown(self) -> None:
         """Release Qt resources deterministically (called on close/exit)."""

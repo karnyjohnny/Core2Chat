@@ -23,10 +23,15 @@ architektoniczna.
 ## Zakazy (twarde)
 
 `QtWebEngine`, `QtWebKit`, `PySide2/6`, `PyQt6`, `Electron`, `Tauri`,
-`Chromium`, `qasync`, `google-genai`/`google.generativeai`, `Pygments`,
-`numpy`, `PIL` w runtime, telemetria, autoaktualizacje, zdalna baza,
-logowanie/account system. Test `test_forbidden_gui_dependencies_are_not_imported`
-blokuje ich import.
+`Chromium`, `qasync`, `google-genai`/`google.generativeai`, `numpy`, `PIL`
+w runtime, telemetria, autoaktualizacje, zdalna baza, logowanie/account system.
+Test `test_forbidden_gui_dependencies_are_not_imported` blokuje ich import.
+
+Dozwolone zależności runtime (dokładnie trzy): `PyQt5==5.15.11`,
+`httpx==0.28.1`, `Pygments==2.17.2`. **Pygments był zakazany do 0.1.1**
+(wzgląd na pamięć); od 0.1.2 jest dozwolony decyzją użytkownika — pomiar
+pokazał ~7 MB narzutu przy imporcie, a w zamian dostajemy 575 lexerów zamiast
+15 i prawdziwy tokenizer. Nie dodawaj czwartej zależności bez pomiaru.
 
 ## Architektura — podział odpowiedzialności
 
@@ -135,7 +140,7 @@ Nie zmieniaj tego bez ponownej weryfikacji (skill `gemini-api-audit`).
 
 ```bash
 # testy (bez sieci i bez klucza)
-QT_QPA_PLATFORM=offscreen python -m pytest            # 495 testów, ~85 s
+QT_QPA_PLATFORM=offscreen python -m pytest            # 517 testów, ~74 s
 QT_QPA_PLATFORM=offscreen python -m pytest tests/integration -q
 
 # live smoke (opt-in; klucz tylko z env)
@@ -161,9 +166,10 @@ Dane aplikacji: `CORE2CHAT_DATA_DIR` > `portable.flag`+`data/` >
 
 1. **Brak SDK Google** — REST przez httpx daje kontrolę nad timeoutami,
    ponowieniami, strumieniem i pamięcią; mniej zależności.
-2. **Własny renderer Markdown + highlighter** — bez Pygments i bez silnika
-   webowego; eskejpowanie wszystkiego (łącznie z `"` i `'`) blokuje iniekcję
-   atrybutów.
+2. **Własny renderer Markdown + Pygments do składni** — bez silnika webowego;
+   eskejpowanie wszystkiego (łącznie z `"` i `'`) blokuje iniekcję atrybutów.
+   Kolory pochodzą z `utils/highlight.TOKEN_STYLE` (nasza paleta VS Code Dark,
+   nie gotowy motyw Pygments — żaden z 48 nie pasował).
 3. **Capabilities z dowodów** — metadane runtime, udokumentowane reguły,
    sondy i obserwacja ruchu; nigdy z nazwy modelu.
 4. **SQLite jako jedyne źródło prawdy** — tryb `stateful`
@@ -206,6 +212,32 @@ Dane aplikacji: `CORE2CHAT_DATA_DIR` > `portable.flag`+`data/` >
 10. **Modalne dialogi (`QMessageBox`, `QInputDialog`) blokują test headless.**
     W testach podstawiaj je przez `monkeypatch`, a walidację ustawień testuj
     przez `_validate()` / `_on_apply()`.
+11. **QSS NIE sięga do wnętrza `QTextDocument`.** Reguły typu
+    `QTextBrowser#MessageBody pre { background-color: … }` są ignorowane —
+    przez to w 0.1.1 bloki kodu nie miały ani tła, ani kolorów składni
+    (highlighter generował klasy `.tok-*`, których QSS nie stosował). Jedyna
+    droga: `QTextDocument.setDefaultStyleSheet(css)` — i tam selektory klas
+    **działają** (`span.k{color:#569cd6}` zweryfikowane na PyQt5 5.15).
+    Kolory składni idą jako inline `style="color:#…"` (działa zawsze),
+    CSS generuje `gui/theme.message_document_css()` z tych samych tokenów.
+12. **`Ctrl+C` w `QTextBrowser` wymaga FOKUSU, nie tylko zaznaczenia.**
+    Przy `setFocusPolicy(Qt.NoFocus)` kliknięcie nie ustawia fokusu, więc
+    zdarzenie klawiatury w ogóle nie dociera do widgetu i kopiowanie działa
+    wyłącznie z menu kontekstowego. Poprawnie: `setFocusPolicy(Qt.ClickFocus)`
+    + `Qt.TextSelectableByKeyboard` w `setTextInteractionFlags()`.
+    Uwaga na testy: `QTest.keyClick(browser, …)` wysyła zdarzenie wprost do
+    widgetu i **zamaskuje** ten błąd — trzeba klikać myszą i sprawdzać
+    `QApplication.focusWidget()`.
+13. **Pygments `HtmlFormatter` kończy `lineseparator`em KAŻDĄ linię, także
+    ostatnią** — niezależnie od `ensurenl=False` w lexerze. Bez zdjęcia tego
+    jednego `\n` każdy blok kodu rośnie o pustą linię (`utils/highlight.py`
+    robi to jawnie). Fallback `TextLexer()` musi dostawać
+    `stripnl=False, ensurenl=False`, bo domyślnie dokleja nową linię.
+14. **`QDialog.exec_()` w teście headless = zawieszenie na zawsze** (własna
+    pętla zdarzeń bez powrotu). W v0.1.2 domyślne `close_action="ask"`
+    zablokowało tak cały zestaw testów i `perf_benchmark.py` (odpala go CI!).
+    Tripwire w `tests/conftest.py` zamienia każdy modal w natychmiastowy
+    `AssertionError`; okna w testach twórz z `close_action="exit"`.
 
 ## Wydanie 0.1.1 — co się zmieniło architektonicznie
 
@@ -223,14 +255,48 @@ Dane aplikacji: `CORE2CHAT_DATA_DIR` > `portable.flag`+`data/` >
   „wycięliśmy potrzebne" (błąd) od „kontener tego nie ma" (ostrzeżenie).
   Listy w `build.py` i w spec muszą być identyczne — pilnuje tego test.
 
+## Wydanie 0.1.2 — co się zmieniło architektonicznie
+
+- **Kolorowanie składni: Pygments** (trzecia dozwolona zależność runtime,
+  decyzja użytkownika). `utils/highlight.py`: własny styl `Core2Style` (paleta
+  VS Code Dark z `TOKEN_STYLE`, light z `TOKEN_STYLE_LIGHT`), klasy = NATYWNE
+  nazwy Pygments ze `STANDARD_TYPES` (nie własne `.tok-*` w wyjściu HTML!).
+  Dwa tryby z jednej tabeli: inline `style=` (używa go `utils/markdown.py`
+  przy finalizacji) i klasy + `style_css()` →
+  `QTextDocument.setDefaultStyleSheet`. Backend degraduje do `plain` bez
+  awarii. Locki anty-rozjazdowe w `tests/test_markdown.py`:
+  `test_token_table_is_aligned_with_pygments_standard_types` i
+  `test_emitted_classes_are_covered_or_deliberately_unstyled`.
+- **Zamknięcie okna**: `settings.close_action` (ask/minimize/exit, domyślnie
+  `ask`) + migracja z `close_to_tray`; dialog `gui/close_dialog.py`
+  (Anuluj/Zminimalizuj/Zamknij + „Zapamiętaj"). `MainWindow.resolve_close_action`
+  jest JEDYNYM miejscem decyzji; `closeEvent` tylko wykonuje.
+- **Tray**: menu domyślnie WYŁĄCZONE (`menu_enabled=False`, w ustawieniach
+  „funkcja zbufowana"). Bez menu Trigger/Context/DoubleClick → `show`,
+  MiddleClick → nowa rozmowa z fokusem. `set_menu_enabled()` działa w locie.
+- **Wiadomości**: segmenty (`utils/markdown.split_segments`) — user = plain
+  text + zwijanie; assistant = tekst HTML + bloki kodu jako `CodeBlock`
+  (nagłówek język·linie, „Kopiuj", ClickFocus). Akcje zawsze widoczne.
+- **CI (po logach użytkownika)**: BEZ `cache: pip`; macierz testów
+  windows-2022/py3.8.10 + ubuntu-22.04/py3.11 (3.8.10 niedostępne przez
+  setup-python na ubuntu-22.04); build TYLKO windows-2022, dwa artefakty
+  (onedir + onefile) z JEDNEGO spec (`CORE2CHAT_ONEFILE=1` przełącza tryb;
+  `build.py --mode onefile` ustawia ją sam). Surowe `pyinstaller --onefile
+  main.py` jest zabronione — omija przycinanie i zasoby.
+- **Pygments w paczce**: `collect_submodules("pygments")` w HIDDEN_IMPORTS
+  (dynamiczne ładowanie lexerów) + pin w requirements.txt + lock w
+  `test_requirements_pin_the_target_versions`.
+
 ## Znane luki / do zrobienia
 
 - Uruchomienie zbudowanego binarium jest weryfikowane **u użytkownika** na
-  Windows 7 (lista 10 kroków w `.github/RELEASE.md`), nie w CI: runner GitHuba
+  Windows 7 (lista 12 kroków w `.github/RELEASE.md`), nie w CI: runner GitHuba
   to Windows Server 2022, a kontener developerski ma niespójny stdlib
   (bootstrap PyInstallera nie znajduje `ipaddress` — reprodukowalne dla
   „hello world").
-- RSS 62,2 MB vs cel ≈60 MB (Linux); pomiar na Windows do wykonania.
+- RSS 63,2 MB vs cel ≈60 MB (Linux); Pygments dokłada ~7 MB po pierwszym
+  imporcie i ~14 ms/blok przy finalizacji (streaming bez kolorowania).
+  Pomiar na Windows do wykonania.
 - Brak pętli function calling w UI (model zdarzeń gotowy).
 - Interfejs tylko PL; tłumaczenie EN niekompletne.
 - Zagnieżdżone listy Markdown: `<ul>` w `<ul>` bez `<li>`-rodzica.

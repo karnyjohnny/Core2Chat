@@ -1,23 +1,31 @@
-# Core2Chat CI: testy -> build -> artefakt -> release
+# Core2Chat CI: testy -> build (Windows: onedir + onefile) -> draft release
 #
 # Założenia (task §18):
 #   * runner Windows NIE jest równoznaczny z runtime Windows 7. Obrazy
-#     GitHuba to Windows Server 2019/2022/2025; `windows-2019` został
-#     wycofany 2025-06-30, więc build odbywa się na `windows-2022`.
-#   * kompatybilność z Windows 7 SP1 zapewnia: Python 3.8 (ostatnia linia
-#     wspierająca Win7), PyQt5 5.15.11 oraz PyInstaller 5.13.2 - wszystko
-#     przypięte w requirements*.txt. Bootloader PyInstallera jest kompilowany z
-#     NTDDI_VERSION=0x06010000 (_WIN32_WINNT=0x0601 = Windows 7).
+#     GitHuba to Windows Server 2022/2025 (`windows-2019` wycofany
+#     2025-06-30), więc build odbywa się na `windows-2022`.
+#   * kompatybilność z Windows 7 SP1 zapewniają piny: Python 3.8 (ostatnia
+#     linia wspierająca Win7), PyQt5 5.15.11, PyInstaller 5.13.2. Bootloader
+#     PyInstallera 5.13.2 jest kompilowany z NTDDI_VERSION=0x06010000
+#     (_WIN32_WINNT=0x0601 = Windows 7).
 #   * CI instaluje Python 3.8.10, bo to OSTATNIA wersja 3.8, dla której
-#     python.org publikuje oficjalne binaria (instalatory/msi). Wersje 3.8.11+
-#     są wydawane wyłącznie jako kod źródłowy, więc actions/setup-python nie
-#     może ich pobrać na runnerze. Lokalny interpreter 3.8.20 (build osoby
-#     trzeciej) jest obsługiwany - kod celuje w składnię 3.8, nie w podwersję.
-#   * artefakt z CI jest "best effort": docelowa weryfikacja musi odbyć się na
-#     Windows 7 SP1 (patrz .github/RELEASE.md). CI nie zastępuje tego testu i
-#     nie twierdzi, że zastępuje.
-#   * sekrety: workflow NIGDY nie używa GEMINI_API_KEY. Testy live są opt-in
-#     i domyślnie wyłączone.
+#     python.org publikuje oficjalne binaria; 3.8.11+ istnieją wyłącznie jako
+#     kod źródłowy i actions/setup-python nie może ich pobrać.
+#   * Linux w macierzy testów jedzie TYLKO na 3.11: setup-python nie
+#     dostarczy 3.8.10 na ubuntu-22.04 (brak buildów w manifeście dla tego
+#     obrazu). Rola Linuksa: pilnować, że kod nie używa składni nowszej niż
+#     3.8 i że testy przechodzą też na nowszym interpreterze.
+#   * Build TYLKO windows-2022 (docelowa platforma): dwa artefakty z JEDNEGO
+#     pyinstaller.spec - onedir (zalecany dla Win7) i onefile
+#     (CORE2CHAT_ONEFILE=1, przełączany przez `build.py --mode onefile`).
+#   * BEZ `cache: pip` w setup-python: na części runnerów kończy się błędem
+#     "Could not get cache folder path"; instalacja zależności trwa krócej
+#     niż diagnozowanie cache.
+#   * artefakt z CI jest "best effort": docelowa weryfikacja musi odbyć się
+#     na Windows 7 SP1 (patrz .github/RELEASE.md). CI nie zastępuje tego
+#     testu i nie twierdzi, że zastępuje.
+#   * sekrety: workflow NIGDY nie używa GEMINI_API_KEY poza opt-in jobem
+#     live-api (workflow_dispatch + jawny przełącznik).
 
 name: CI
 
@@ -51,19 +59,16 @@ jobs:
   tests:
     name: Testy (${{ matrix.os }} / py${{ matrix.python }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
     strategy:
       fail-fast: false
       matrix:
-        # Docelowy runtime to Python 3.8 (w CI: 3.8.10 - ostatnia wersja 3.8 z
-        # oficjalnymi binariami). Nowszy Python pilnuje, że kod nie zaczyna
-        # zależeć od składni niedostępnej w 3.8.
+        # Docelowy runtime: Windows + Python 3.8.10 (ostatnia wersja 3.8 z
+        # oficjalnymi binariami). Ubuntu tylko 3.11 - patrz nagłówek pliku.
         include:
           - os: windows-2022
             python: "3.8.10"
             qt_platform: "windows"
-          - os: ubuntu-22.04
-            python: "3.8.10"
-            qt_platform: "offscreen"
           - os: ubuntu-22.04
             python: "3.11"
             qt_platform: "offscreen"
@@ -74,10 +79,6 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python }}
-          cache: pip
-          cache-dependency-path: |
-            requirements.txt
-            requirements-dev.txt
 
       - name: Zależności systemowe (Linux - biblioteki Qt)
         if: runner.os == 'Linux'
@@ -128,6 +129,7 @@ jobs:
   live-api:
     name: Live API smoke test
     runs-on: ubuntu-22.04
+    timeout-minutes: 25
     if: >
       github.event_name == 'workflow_dispatch' &&
       github.event.inputs.run_live_tests == 'true'
@@ -136,7 +138,6 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-          cache: pip
       - run: python -m pip install -r requirements.txt
       - name: Smoke test przeciwko realnemu API
         env:
@@ -147,38 +148,19 @@ jobs:
       # wylacznie ze zmiennej srodowiskowej i nie drukuje.
 
   # -------------------------------------------------------------------- build
+  # Tylko Windows: to jest docelowa platforma. Linux build nie powstaje -
+  # nie jest wspieranym celem (task §18, decyzja o uproszczeniu CI).
   build:
-    name: Build (${{ matrix.os }})
+    name: Build (windows-2022, py3.8.10)
     needs: tests
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: windows-2022
-            artifact: Core2Chat-windows-x64
-            binary: dist/Core2Chat/Core2Chat.exe
-          - os: ubuntu-22.04
-            artifact: Core2Chat-linux-x64
-            binary: dist/Core2Chat/Core2Chat
+    runs-on: windows-2022
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-          cache: pip
-          cache-dependency-path: |
-            requirements.txt
-            requirements-dev.txt
-
-      - name: Zaleznosci systemowe (Linux)
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            libglib2.0-0 libgl1 libegl1 libxkbcommon0 libdbus-1-3 \
-            libfontconfig1 binutils
 
       - name: Zaleznosci Python
         run: |
@@ -188,46 +170,79 @@ jobs:
       - name: Skan sekretow + walidacja spec
         run: python build.py --check
 
-      - name: PyInstaller (onedir, windowed)
+      # ------------------------------------------------------- onedir
+      - name: PyInstaller - onedir (windowed)
         run: python build.py --mode release
 
-      - name: Weryfikacja zawartosci builda
+      - name: Weryfikacja zawartosci onedir
         shell: bash
         run: |
           set -e
-          test -f "${{ matrix.binary }}"
-          # Zabronione stosy nie moga trafic do paczki.
-          ! ls dist/Core2Chat | grep -Ei 'webengine|webkit|qt3d|qtquick|qtqml|pyside|pyqt6' || \
-            { echo "ZABRONIONY modul Qt w buildzie"; exit 1; }
+          test -f dist/Core2Chat/Core2Chat.exe
+          # Zabronione stosy nie moga trafic do paczki (search po calym drzewie).
+          forbidden=$(find dist/Core2Chat \( -iname '*webengine*' -o -iname '*webkit*' \
+            -o -iname '*qt3d*' -o -iname '*qtquick*' -o -iname '*qtqml*' \
+            -o -iname '*pyside*' -o -iname '*pyqt6*' \) -print)
+          if [ -n "$forbidden" ]; then
+            echo "ZABRONIONY modul Qt w buildzie:"; echo "$forbidden"; exit 1
+          fi
           # Zasoby musza byc obecne.
           test -f dist/Core2Chat/assets/style_dark.qss
-          test -f dist/Core2Chat/assets/icon.ico || test "$(uname)" = "Linux"
+          test -f dist/Core2Chat/assets/icon.ico
+          # Wtyczki platformowe bez ktorych EXE nie wstanie.
+          find dist/Core2Chat -iname 'qwindows.dll' | grep -q .
 
-      - name: Smoke test binarium
+      - name: Smoke test binarium onedir (--diagnostics)
         env:
-          QT_QPA_PLATFORM: ${{ runner.os == 'Linux' && 'offscreen' || 'windows' }}
-          CORE2CHAT_DATA_DIR: ${{ runner.temp }}/c2c-exe
+          QT_QPA_PLATFORM: windows
+          CORE2CHAT_DATA_DIR: ${{ runner.temp }}/c2c-exe-onedir
         run: |
-          python -c "import os,subprocess,sys,json; \
-          out=subprocess.run([r'${{ matrix.binary }}','--diagnostics'],capture_output=True,text=True,timeout=120); \
-          print(out.stdout[-800:]); print(out.stderr[-800:], file=sys.stderr); sys.exit(out.returncode)"
+          python -c "import subprocess,sys; out=subprocess.run([r'dist/Core2Chat/Core2Chat.exe','--diagnostics'],capture_output=True,text=True,timeout=180); print(out.stdout[-800:]); print(out.stderr[-800:], file=sys.stderr); sys.exit(out.returncode)"
 
-      - name: Artefakt - binarium
+      - name: Rozmiar paczki onedir
+        shell: bash
+        run: du -sh dist/Core2Chat
+
+      - name: Artefakt - onedir
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.artifact }}
+          name: Core2Chat-windows-x64-onedir
           path: dist/Core2Chat/
           retention-days: 30
 
-      - name: Rozmiar paczki
+      # ------------------------------------------------------- onefile
+      # Ten sam pyinstaller.spec; build.py ustawia CORE2CHAT_ONEFILE=1, wiec
+      # trimming, zasoby i excludes sa identyczne jak w onedir.
+      - name: PyInstaller - onefile
+        run: python build.py --mode onefile
+
+      - name: Weryfikacja onefile
         shell: bash
-        run: du -sh dist/Core2Chat
+        run: |
+          set -e
+          test -f dist/Core2Chat.exe
+          ls -lh dist/Core2Chat.exe
+
+      - name: Smoke test binarium onefile (--diagnostics, samorozpakowanie)
+        env:
+          QT_QPA_PLATFORM: windows
+          CORE2CHAT_DATA_DIR: ${{ runner.temp }}/c2c-exe-onefile
+        run: |
+          python -c "import subprocess,sys; out=subprocess.run([r'dist/Core2Chat.exe','--diagnostics'],capture_output=True,text=True,timeout=300); print(out.stdout[-800:]); print(out.stderr[-800:], file=sys.stderr); sys.exit(out.returncode)"
+
+      - name: Artefakt - onefile
+        uses: actions/upload-artifact@v4
+        with:
+          name: Core2Chat-windows-x64-onefile
+          path: dist/Core2Chat.exe
+          retention-days: 30
 
   # ------------------------------------------------------------------ release
   release:
     name: Release
     needs: build
     runs-on: ubuntu-22.04
+    timeout-minutes: 20
     if: startsWith(github.ref, 'refs/tags/v')
     permissions:
       contents: write
@@ -238,6 +253,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: artifacts
+          pattern: Core2Chat-windows-x64-*
 
       - name: Pakowanie archiwow
         run: |
@@ -245,23 +261,25 @@ jobs:
           cd artifacts
           for dir in */; do
             name="${dir%/}"
-            if command -v zip >/dev/null; then
-              (cd "$name" && zip -qr "../$name.zip" .)
-            else
-              tar -czf "$name.tar.gz" -C "$name" .
-            fi
+            (cd "$name" && zip -qr "../$name.zip" .)
           done
           ls -la
 
-      - name: Publikacja release
+      - name: Publikacja release (draft)
         uses: softprops/action-gh-release@v2
         with:
           files: artifacts/*.zip
           draft: true
           generate_release_notes: true
           body: |
-            Build wytworzony przez CI na runnerze GitHuba (Windows Server 2022 /
-            Ubuntu 22.04) z Pythonem 3.8.10, PyQt5 5.15.11 i PyInstaller 5.13.2.
+            Build wytworzony przez CI na runnerze GitHuba (Windows Server 2022)
+            z Pythonem 3.8.10, PyQt5 5.15.11 i PyInstaller 5.13.2.
+
+            Artefakty:
+            * `Core2Chat-windows-x64-onedir.zip` - katalog z EXE (zalecany dla
+              Windows 7: szybszy start, pewniejsze ładowanie wtyczek Qt),
+            * `Core2Chat-windows-x64-onefile.zip` - pojedynczy plik EXE
+              (wolniejszy cold start - samorozpakowanie).
 
             **Wymaga weryfikacji na Windows 7 SP1 przed publikacją** - runner CI
             nie jest systemem docelowym. Lista kroków: `.github/RELEASE.md`.

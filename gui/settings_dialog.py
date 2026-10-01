@@ -8,8 +8,9 @@ from PyQt5.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox,
                              QLabel, QLineEdit, QMessageBox, QPushButton,
                              QSpinBox, QTabWidget, QVBoxLayout, QWidget)
 
-from core.config import AppSettings
-from core.constants import API_KEY_ENV_VAR, APP_NAME
+from core.config import (CLOSE_ACTION_LABELS, CLOSE_ACTION_MINIMIZE,
+                         AppSettings)
+from core.constants import (API_KEY_ENV_VAR, APP_NAME, GEMINI_PROVIDER_ID)
 from core.hotkey_manager import parse_hotkey
 from core.security import METHOD_DPAPI
 from models.chat_models import StateMode
@@ -71,11 +72,44 @@ class SettingsDialog(QDialog):
         self.minimize_to_tray.setChecked(self._settings.minimize_to_tray)
         form.addRow(self.minimize_to_tray)
 
-        self.close_to_tray = QCheckBox("Zamknięcie okna chowa do zasobnika", panel)
-        self.close_to_tray.setChecked(self._settings.close_to_tray)
-        self.close_to_tray.setToolTip(
-            "Gdy wyłączone, zamknięcie okna kończy działanie programu.")
-        form.addRow(self.close_to_tray)
+        self.close_action = QComboBox(panel)
+        for value, label in CLOSE_ACTION_LABELS.items():
+            self.close_action.addItem(label, value)
+        index = self.close_action.findData(self._settings.close_action)
+        self.close_action.setCurrentIndex(max(0, index))
+        self.close_action.setToolTip(
+            "Co robi przycisk X na oknie programu.\n"
+            "„Pytaj za każdym razem” (domyślne) pokazuje okno dialogowe "
+            "Anuluj / Zminimalizuj / Zamknij program. Zaznaczenie w nim "
+            "„Zapamiętaj wybór” ustawia tę opcję na wybraną odpowiedź.")
+        form.addRow("Zachowanie zamknięcia okna:", self.close_action)
+
+        self.close_hint = QLabel("")
+        self.close_hint.setObjectName("MessageMeta")
+        self.close_hint.setWordWrap(True)
+        self.close_action.currentIndexChanged.connect(
+            lambda _index: self._describe_close_action())
+        self._describe_close_action()
+        form.addRow("", self.close_hint)
+
+        self.tray_menu = QCheckBox("Menu w ikonie zasobnika (tray icon)", panel)
+        self.tray_menu.setChecked(self._settings.tray_menu_enabled)
+        self.tray_menu.setToolTip(
+            "Funkcja zbufowana (eksperymentalna): może działać, może nie "
+            "działać - zależy od powłoki systemowej i wersji Windows.\n"
+            "Gdy WYŁĄCZONE (domyślnie): ikona nie ma menu, a zarówno lewy, jak "
+            "i prawy przycisk myszy przywracają okno programu.")
+        form.addRow(self.tray_menu)
+
+        self.tray_menu_warning = QLabel(
+            "⚠ Funkcja zbufowana - menu zasobnika może działać "
+            "niestabilnie na starszych systemach. Gdy wyłączone, ikona "
+            "przywraca okno na lewy i prawy przycisk myszy.")
+        self.tray_menu_warning.setObjectName("MessageMeta")
+        self.tray_menu_warning.setWordWrap(True)
+        self.tray_menu_warning.setVisible(self.tray_menu.isChecked())
+        self.tray_menu.toggled.connect(self.tray_menu_warning.setVisible)
+        form.addRow("", self.tray_menu_warning)
 
         self.single_instance = QCheckBox("Tylko jedna instancja aplikacji", panel)
         self.single_instance.setChecked(self._settings.single_instance)
@@ -129,12 +163,9 @@ class SettingsDialog(QDialog):
         layout = QVBoxLayout(panel)
         form = QFormLayout()
 
-        self.provider = QComboBox(panel)
-        self.provider.addItem("Google Gemini", "gemini")
-        self.provider.setEnabled(False)
-        self.provider.setToolTip("Architektura obsługuje wielu dostawców; "
-                                 "w tej wersji dostępny jest Gemini.")
-        form.addRow("Dostawca:", self.provider)
+        provider_label = QLabel("Google Gemini (Interactions API)", panel)
+        provider_label.setObjectName("DialogTitle")
+        form.addRow("Dostawca:", provider_label)
 
         self.api_key = QLineEdit(panel)
         self.api_key.setEchoMode(QLineEdit.Password)
@@ -426,6 +457,25 @@ class SettingsDialog(QDialog):
             self.hotkey_status.setText(
                 "Poprawny skrót. Rejestracja nastąpi po zapisaniu ustawień.")
 
+    def _describe_close_action(self) -> None:
+        """Explain the current choice in plain language (no surprises at X)."""
+        if getattr(self, "close_hint", None) is None:
+            return                      # zakładka jeszcze nie zbudowana
+        value = self.close_action.currentData()
+        if value == CLOSE_ACTION_MINIMIZE:
+            self.close_hint.setText(
+                "Kliknięcie X chowa okno do zasobnika (albo minimalizuje na "
+                "pasku zadań, gdy zasobnik jest niedostępny). Program działa "
+                "dalej.")
+        elif value == "exit":
+            self.close_hint.setText(
+                "Kliknięcie X kończy działanie programu bez pytania.")
+        else:
+            self.close_hint.setText(
+                "Kliknięcie X pyta: Anuluj / Zminimalizuj / Zamknij program. "
+                "Zaznaczenie „Zapamiętaj wybór” w tym oknie ustawia tę opcję "
+                "na wybraną odpowiedź.")
+
     def _describe_availability(self) -> None:
         if getattr(self, "availability_status", None) is None:
             return                      # zakładka jeszcze nie zbudowana
@@ -507,7 +557,12 @@ class SettingsDialog(QDialog):
         settings.language = self.language.currentData()
         settings.start_minimized = self.start_minimized.isChecked()
         settings.minimize_to_tray = self.minimize_to_tray.isChecked()
-        settings.close_to_tray = self.close_to_tray.isChecked()
+        action = self.close_action.currentData()
+        settings.close_action = action
+        # The legacy flag is derived, not edited: X -> minimize means the
+        # window hides to the tray, anything else really quits.
+        settings.close_to_tray = action == CLOSE_ACTION_MINIMIZE
+        settings.tray_menu_enabled = self.tray_menu.isChecked()
         settings.single_instance = self.single_instance.isChecked()
         settings.confirm_delete_session = self.confirm_delete.isChecked()
 
@@ -518,7 +573,7 @@ class SettingsDialog(QDialog):
         settings.accent_color = self.accent.text().strip()
         settings.auto_scroll = self.auto_scroll.isChecked()
 
-        settings.provider_id = self.provider.currentData()
+        settings.provider_id = GEMINI_PROVIDER_ID
         settings.base_url = self.base_url.text().strip()
         settings.api_revision = self.api_revision.text().strip()
         settings.connect_timeout = self.connect_timeout.value()

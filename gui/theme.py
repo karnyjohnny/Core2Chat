@@ -23,6 +23,7 @@ DARK_PALETTE: Dict[str, str] = {
     "SURFACE": "#2d2d30",
     "BORDER": "#3f3f46",
     "CODE_BG": "#1a1a1a",
+    "CODE_FG": "#d4d4d4",
     "CODE_HEAD_BG": "#252526",
     # Row/selection states. QSS does not cover every Qt palette role (notably
     # AlternateBase), so the palette is the source of truth for those and the
@@ -42,6 +43,7 @@ LIGHT_PALETTE: Dict[str, str] = {
     "SURFACE": "#fafafa",
     "BORDER": "#d0d0d0",
     "CODE_BG": "#f5f5f5",
+    "CODE_FG": "#1f1f1f",
     "CODE_HEAD_BG": "#ececec",
     "ALT_ROW": "#f2f2f2",
     "ROW_HOVER": "#e6e6e6",
@@ -155,6 +157,57 @@ def apply_theme(app, dark: bool = True, accent: str = ACCENT_COLOR,
     return stylesheet
 
 
+def message_document_css(dark: bool = True, accent: str = ACCENT_COLOR,
+                         code_font_size: int = DEFAULT_CODE_FONT_SIZE) -> str:
+    """Stylesheet for *inside* a QTextDocument (Markdown + syntax colours).
+
+    Qt Style Sheets do not cascade into document content: a rule such as
+    ``QTextBrowser#MessageBody pre { background-color: … }`` is ignored, which
+    is why code blocks used to render unstyled. ``QTextDocument`` has its own
+    CSS engine, reachable only through ``setDefaultStyleSheet()``, and it does
+    honour element *and* class selectors (both verified on PyQt5 5.15).
+
+    Colours come from the same token table as the widget stylesheet, plus the
+    Pygments class names emitted by :mod:`utils.highlight`, so there is exactly
+    one palette in the application.
+    """
+    tokens = palette_tokens(dark, accent)
+    mono = ('"Consolas", "Cascadia Mono", "DejaVu Sans Mono", monospace')
+    parts = [
+        "a{color:%s;text-decoration:none}" % tokens["ACCENT"],
+        "h1{font-size:15pt;color:%s}" % tokens["TEXT"],
+        "h2{font-size:13pt;color:%s}" % tokens["TEXT"],
+        "h3{font-size:12pt;color:%s}" % tokens["TEXT"],
+        "h4{font-size:11pt;color:%s}" % tokens["TEXT"],
+        "h5{font-size:11pt;color:%s}" % tokens["TEXT"],
+        "h6{font-size:11pt;color:%s}" % tokens["TEXT"],
+        "p{color:%s;margin:2px 0}" % tokens["TEXT"],
+        "li{color:%s}" % tokens["TEXT"],
+        "blockquote{color:%s;border-left:2px solid %s;padding-left:6px;"
+        "margin:3px 0 3px 4px}" % (tokens["MUTED"], tokens["BORDER"]),
+        "hr{color:%s}" % tokens["BORDER"],
+        "pre{background-color:%s;color:%s;font-family:%s;font-size:%dpt;"
+        "margin:3px 0;padding:4px}" % (tokens["CODE_BG"], tokens["CODE_FG"],
+                                       mono, int(code_font_size)),
+        "code{font-family:%s;font-size:%dpt;color:%s}"
+        % (mono, int(code_font_size), tokens["CODE_FG"]),
+        "code.inline{background-color:%s;color:%s;padding:0 2px}"
+        % (tokens["SURFACE"], tokens["TEXT"]),
+        "table.md-table{border-collapse:collapse;margin:4px 0}",
+        "table.md-table th{background-color:%s;color:%s;font-weight:bold;"
+        "border:1px solid %s;padding:2px 6px}"
+        % (tokens["CODE_HEAD_BG"], tokens["TEXT"], tokens["BORDER"]),
+        "table.md-table td{color:%s;border:1px solid %s;padding:2px 6px}"
+        % (tokens["TEXT"], tokens["BORDER"]),
+        "span.task{color:%s}" % tokens["TEXT"],
+    ]
+    from utils.highlight import style_css
+
+    parts.append(style_css(light=not dark, base_color=tokens["CODE_BG"],
+                           code_fg=tokens["CODE_FG"]))
+    return "".join(parts)
+
+
 def repolish(widget) -> None:
     """Re-apply the stylesheet after an objectName change (Qt needs this)."""
     style = widget.style()
@@ -191,8 +244,8 @@ QPushButton { background-color: {{SURFACE}}; border: 1px solid {{BORDER}};
           padding: 4px 10px; }
 QPushButton#PrimaryButton { background-color: {{ACCENT}}; color: #fff;
           border: 1px solid {{ACCENT}}; }
-QTextBrowser#MessageBody pre { background-color: {{CODE_BG}};
-          font-size: {{CODE_FONT_SIZE}}pt; }
+QTextBrowser#CodeBlockBody { background-color: {{CODE_BG}};
+          color: {{CODE_FG}}; font-size: {{CODE_FONT_SIZE}}pt; }
 QScrollBar:vertical { width: 10px; background: {{BG}}; }
 QScrollBar::handle:vertical { background: {{BORDER}}; min-height: 24px; }
 """

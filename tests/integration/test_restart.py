@@ -45,6 +45,7 @@ class Launch(object):
         os.environ["CORE2CHAT_DATA_DIR"] = self.data_dir
         self.context = AppContext()
         self.context.initialize()
+        self.context.settings.close_action = "exit"   # hermetic X: no ask-dialog
         self.services = (ChatService(self.context),
                          SessionService(self.context),
                          ExportService(self.context),

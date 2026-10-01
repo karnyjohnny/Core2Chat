@@ -13,6 +13,11 @@ Lifecycle rules that keep the tray responsive across many show/hide cycles:
   (``deleteLater``), and the Python wrappers are then invalidated;
 * all operations are idempotent, so repeated ``show()``/``hide()``/
   ``shutdown()`` calls - including one after the window is gone - are safe.
+
+The context menu is **optional** (``menu_enabled=False`` by default, task
+§1 v0.1.2): platform tray menus are the least reliable part of the tray API on
+older Windows, so without the menu the icon has exactly one job - both left and
+right click restore the window. That behaviour cannot break.
 """
 
 from typing import Any, Callable, Dict, Optional
@@ -74,7 +79,8 @@ def tray_available() -> bool:
 class TrayManager(object):
     """Owns the tray icon and its menu. No AI logic, no window ownership."""
 
-    def __init__(self, parent: Optional[QWidget] = None) -> None:
+    def __init__(self, parent: Optional[QWidget] = None,
+                 menu_enabled: bool = False) -> None:
         if QApplication.instance() is None:
             raise RuntimeError(
                 "TrayManager wymaga utworzonego QApplication (bez niego "
@@ -83,6 +89,7 @@ class TrayManager(object):
         self._owner: Any = parent if parent is not None else \
             QApplication.instance()
         self.parent = parent
+        self.menu_enabled = bool(menu_enabled)
         self.icon = QSystemTrayIcon(load_icon(parent), self._owner)
         self.icon.setToolTip(APP_NAME)
         self.menu = QMenu(self._owner if isinstance(self._owner, QWidget)
@@ -105,7 +112,11 @@ class TrayManager(object):
               on_settings: Callable[[], None],
               on_exit: Callable[[], None],
               on_toggle_pause: Optional[Callable[[bool], None]] = None) -> None:
-        """Create the menu once. Callbacks are stored, not captured by lambdas."""
+        """Wire the tray once. Callbacks are stored, not captured by lambdas.
+
+        With ``menu_enabled=False`` no context menu is attached at all, so the
+        icon only ever restores the window (see :meth:`_on_activated`).
+        """
         if self._built:
             return
         self._callbacks = {
@@ -116,6 +127,10 @@ class TrayManager(object):
             ACTION_EXIT: on_exit,
         }
         self._pause_callback = on_toggle_pause
+        self.icon.activated.connect(self._on_activated)
+        # The menu is always *created* (actions are how tests and set_paused
+        # reach the tray), but only *attached* when the user opted in. Detached
+        # means Qt shows nothing and every click goes to _on_activated.
         self._add(ACTION_SHOW, "Pokaż okno")
         self._add(ACTION_NEW_CHAT, "Nowa rozmowa")
         self._add(ACTION_NEW_CHAT_FOCUSED, "Nowa rozmowa i pisz")
@@ -127,10 +142,11 @@ class TrayManager(object):
         self._add(ACTION_SETTINGS, "Ustawienia…")
         self.menu.addSeparator()
         self._add(ACTION_EXIT, "Zakończ")
-        self.icon.setContextMenu(self.menu)
-        self.icon.activated.connect(self._on_activated)
+        if self.menu_enabled:
+            self.icon.setContextMenu(self.menu)
         self._built = True
-        log.info("tray.built available=%s", self.available)
+        log.info("tray.built available=%s menu=%s", self.available,
+                 "enabled" if self.menu_enabled else "disabled")
 
     def _add(self, name: str, label: str) -> None:
         action = self.menu.addAction(label)
@@ -175,6 +191,39 @@ class TrayManager(object):
         self.icon.showMessage(title, message,
                               QSystemTrayIcon.Critical if critical
                               else QSystemTrayIcon.Information, 4000)
+
+    def set_menu_enabled(self, enabled: bool) -> bool:
+        """Attach or detach the context menu at runtime (settings change).
+
+        Returns False when the menu cannot be built yet (``build()`` not
+        called); the caller then just stores the preference.
+        """
+        enabled = bool(enabled)
+        if enabled == self.menu_enabled:
+            return True
+        self.menu_enabled = enabled
+        if not self._built or self._closed:
+            # Preference stored; the menu is built by build() when it runs.
+            return False
+        if not enabled:
+            try:
+                self.icon.setContextMenu(None)
+            except RuntimeError:
+                self._closed = True
+            log.info("tray.menu_disabled")
+            return True
+        if not self._actions:
+            # build() ran with the menu disabled, so there is nothing to
+            # attach. Report failure instead of pretending the menu is there.
+            log.warning("tray.menu_unavailable reason=no_actions")
+            return False
+        try:
+            self.icon.setContextMenu(self.menu)
+        except RuntimeError:
+            self._closed = True
+            return False
+        log.info("tray.menu_enabled")
+        return True
 
     def set_paused(self, paused: bool) -> None:
         self._paused = bool(paused)
@@ -244,6 +293,13 @@ class TrayManager(object):
             self.dispatch(ACTION_NEW_CHAT)
             self.dispatch(ACTION_NEW_CHAT_FOCUSED)
         elif reason == QSystemTrayIcon.Context:
+            if not self.menu_enabled:
+                # No menu attached: the right button restores the window too,
+                # so the icon behaves identically for both buttons.
+                self.dispatch(ACTION_SHOW)
+                return
             # Qt opens the context menu itself; nothing to do, but the tray
             # must stay alive and responsive for the next click.
             log.debug("tray.context_requested")
+        elif reason == QSystemTrayIcon.DoubleClick:
+            self.dispatch(ACTION_SHOW)

@@ -131,6 +131,7 @@ def stack(tmp_path, monkeypatch, qapp):
 
     context = AppContext()
     context.initialize()
+    context.settings.close_action = "exit"   # hermetic X: no ask-dialog
     services = (ChatService(context), SessionService(context),
                 ExportService(context), ImportService(context))
     yield context, services

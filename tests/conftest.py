@@ -68,3 +68,44 @@ def live_credentials():
     if not key:
         pytest.skip("no live credential provided")
     return key
+
+
+@pytest.fixture(autouse=True)
+def modal_dialog_tripwire(monkeypatch):
+    """Fail fast instead of hanging when a test opens a modal dialog.
+
+    ``QDialog.exec_()`` runs its own event loop and never returns without a
+    human clicking - on CI such a test blocks until the job timeout (this
+    actually happened when ``close_action="ask"`` shipped without the tests
+    being updated). Rule 10 in ``.qwen/QWEN.md``: headless tests monkeypatch
+    dialogs themselves; a test's own monkeypatch overrides this tripwire.
+    """
+    from PyQt5.QtWidgets import (QDialog, QFileDialog, QInputDialog,
+                                 QMessageBox)
+
+    def blocked_exec(self, *args, **kwargs):
+        raise AssertionError(
+            "modalny dialog w teście headless: %s.exec_() - ustaw "
+            "settings.close_action albo monkeypatchuj dialog (zasada #10, "
+            ".qwen/QWEN.md)" % type(self).__name__)
+
+    def blocked_static(name):
+        def raiser(*args, **kwargs):
+            raise AssertionError(
+                "modalny dialog w teście headless: %s.%s - monkeypatchuj "
+                "(zasada #10, .qwen/QWEN.md)" % (name, "static"))
+        return staticmethod(raiser)
+
+    monkeypatch.setattr(QDialog, "exec_", blocked_exec, raising=False)
+    monkeypatch.setattr(QDialog, "exec", blocked_exec, raising=False)
+    for cls, methods in (
+            (QMessageBox, ("information", "warning", "critical", "question",
+                           "about", "aboutQt")),
+            (QInputDialog, ("getText", "getInt", "getDouble", "getItem",
+                            "getMultiLineText")),
+            (QFileDialog, ("getOpenFileName", "getOpenFileNames",
+                           "getSaveFileName", "getExistingDirectory"))):
+        for method in methods:
+            if hasattr(cls, method):
+                monkeypatch.setattr(cls, method, blocked_static(cls.__name__),
+                                    raising=False)

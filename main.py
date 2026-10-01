@@ -12,6 +12,7 @@ import sys
 import time
 from typing import Any, Dict, List, Optional
 
+from core.config import CLOSE_ACTION_MINIMIZE
 from core.constants import (APP_NAME, APP_ORGANIZATION, APP_VERSION,
                             HOTKEY_ID_ACTIVATE)
 from core.logging_setup import get_logger
@@ -133,6 +134,8 @@ class Application(object):
                                  self.session_service, self.export_service,
                                  self.import_service)
         self.window.shutdown_requested.connect(self.shutdown)
+        # Tray preferences (menu on/off) are applied right after settings save.
+        self.window.tray_settings_changed = self.apply_tray_settings
         snapshot = self.context.app_settings_repo.get("ui.window_state")
         self._snapshot_len = len(snapshot or "")
         self._snapshot_applied = self.window.apply_window_state(snapshot)
@@ -162,7 +165,9 @@ class Application(object):
             return
         from core.tray_manager import TrayManager
 
-        self.tray = TrayManager(self.window)
+        self.tray = TrayManager(
+            self.window,
+            menu_enabled=bool(self.context.settings.tray_menu_enabled))
         self.tray.build(
             on_show=self.window.restore_from_tray,
             on_new_chat=self.new_chat_from_tray,
@@ -170,8 +175,26 @@ class Application(object):
             on_settings=self.window.show_settings,
             on_exit=self.shutdown,
             on_toggle_pause=self._on_pause_toggled)
-        if self.context.settings.minimize_to_tray or \
-                self.context.settings.close_to_tray:
+        if self._needs_tray(self.context.settings):
+            self.tray.show()
+
+    @staticmethod
+    def _needs_tray(settings: Any) -> bool:
+        """True when hiding to the tray is reachable from the UI at all.
+
+        With every tray path disabled the icon would only waste a slot in the
+        notification area (and confuse users who click it expecting nothing).
+        """
+        return bool(settings.minimize_to_tray or settings.close_to_tray
+                    or settings.close_action == CLOSE_ACTION_MINIMIZE)
+
+    def apply_tray_settings(self) -> None:
+        """Re-read tray preferences after the settings dialog saved them."""
+        if self.tray is None or self.context is None:
+            return
+        settings = self.context.settings
+        self.tray.set_menu_enabled(bool(settings.tray_menu_enabled))
+        if self._needs_tray(settings):
             self.tray.show()
 
     def _initialize_hotkey(self) -> None:

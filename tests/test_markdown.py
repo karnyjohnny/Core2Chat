@@ -1,8 +1,11 @@
 """Markdown renderer tests: fidelity, safety and streaming behaviour."""
 
+import re
+
 import pytest
 
-from utils.highlight import highlight, languages, normalise_language
+from utils.highlight import (highlight, language_names, normalise_language,
+                             style_css)
 from utils.markdown import (COPY_URI_SCHEME, MarkdownRenderer, escape,
                             is_safe_url, render, to_markdown_document,
                             to_plain_text)
@@ -96,7 +99,10 @@ def test_multiple_code_blocks_are_indexed():
 def test_tilde_fences_are_supported():
     result = render("~~~bash\necho hi\n~~~")
     assert result.code_blocks[0].language == "bash"
-    assert "echo hi" in result.html
+    assert result.code_blocks[0].code == "echo hi"
+    # W HTML treść może być pocięta spanami składni - sprawdzamy po
+    # usunięciu znaczników.
+    assert "echo hi" in re.sub(r"<[^>]+>", "", result.html)
 
 
 def test_unclosed_fence_does_not_lose_content():
@@ -235,8 +241,10 @@ def test_streaming_mode_skips_highlighting():
     code = "def f():\n    return 1"
     streaming = render("```python\n%s\n```" % code, finalize=False)
     final = render("```python\n%s\n```" % code, finalize=True)
-    assert "tok-kw" not in streaming.html
-    assert "tok-kw" in final.html
+    # Kolory składni (inline style) nie mogą pojawić się w trakcie
+    # streamingu - dopiero przy finalizacji wiadomości.
+    assert "<span style=" not in streaming.html
+    assert "<span style=" in final.html
     assert streaming.code_blocks[0].code == final.code_blocks[0].code
 
 
@@ -285,14 +293,109 @@ def test_export_document_has_titles_and_roles():
 
 
 # ---------------------------------------------------------------- highlighting
-def test_python_highlighting_spans():
+def test_python_highlighting_inline_palette():
+    """inline=True (domyślne): kolory palety VS Code Dark jako style="color:…".
+
+    Qt resolwuje inline style w QTextDocument zawsze (QSS nie sięga do
+    dokumentu), dlatego renderer Markdown używa tego trybu przy finalizacji.
+    """
     html = highlight("def foo(x=42):\n    # komentarz\n    return 'tekst'",
                      "python")
-    assert '<span class="tok-kw">def</span>' in html
-    assert '<span class="tok-fn">foo</span>' in html
-    assert '<span class="tok-com"># komentarz</span>' in html
-    assert '<span class="tok-str">' in html
-    assert '<span class="tok-num">42</span>' in html
+    assert '<span style="color: #569cd6">def</span>' in html   # słowo kluczowe
+    assert '<span style="color: #dcdcaa">foo</span>' in html   # nazwa funkcji
+    assert "#6a9955" in html and "font-style: italic" in html  # komentarz
+    assert '<span style="color: #ce9178">' in html             # łańcuch
+    assert '<span style="color: #b5cea8">42</span>' in html    # liczba
+
+
+def test_python_highlighting_class_mode():
+    """inline=False: klasy Pygments, koloryzowane przez CSS z style_css()."""
+    html = highlight("def foo(x=42):", "python", inline=False)
+    assert '<span class="k">def</span>' in html
+    assert '<span class="nf">foo</span>' in html
+    assert '<span class="mi">42</span>' in html
+    assert "<span style=" not in html
+
+
+def test_token_table_is_aligned_with_pygments_standard_types():
+    """Mechanizm anty-rozjazdowy: TOKEN_CSS -> STANDARD_TYPES -> style_css.
+
+    Formatter Pygments nadaje klasy z własnej mapy STANDARD_TYPES, a
+    ``style_css`` musi używać DOKŁADNIE tych samych nazw. Każde niepuste
+    wejście TOKEN_CSS musi (a) istnieć w STANDARD_TYPES - inaczej Pygments
+    wymyśli klasę hybrydową, której nasz CSS nie pokryje - i (b) mieć regułę
+    ``span.<nazwa>{…}`` w generowanym CSS. Rozjazd = ciche renderowanie bez
+    kolorów (wada z 0.1.1: klasy .tok-* których QSS/QTextDocument nie
+    stosował).
+    """
+    from pygments.formatters.html import STANDARD_TYPES
+
+    from utils.highlight import TOKEN_CSS
+
+    standard = dict((str(token), name)
+                    for token, name in STANDARD_TYPES.items())
+    css = style_css()
+    checked = 0
+    for path, cls in TOKEN_CSS.items():
+        if not cls:
+            continue                     # celowo bez stylu (dziedziczenie)
+        assert path in standard, \
+            "TOKEN_CSS ma %r, ale STANDARD_TYPES go nie zna - formatter " \
+            "wygeneruje klasę hybrydową poza naszym CSS" % path
+        assert ("span.%s{" % standard[path]) in css, \
+            "style_css() nie zawiera reguły dla %s (TOKEN_CSS: %s)" \
+            % (standard[path], cls)
+        checked += 1
+    assert checked >= 15, "podejrzanie mało zmapowanych tokenów: %d" % checked
+
+
+def test_emitted_classes_are_covered_or_deliberately_unstyled():
+    """Realne wyjście lexerów: każda klasa ma regułę CSS albo jest jawnie
+    niezmapowana w TOKEN_CSS (dziedziczy kolor bazowy - to projekt, nie luka).
+    """
+    import re
+
+    from pygments.formatters.html import STANDARD_TYPES
+
+    from utils.highlight import TOKEN_CSS
+
+    css = style_css()
+    # Klasy bez reguły = świadomie niezmapowane tokeny (np. w - białe znaki,
+    # l - goły Literal): dziedziczenie koloru jest dla nich poprawne.
+    standard = dict((str(token), name)
+                    for token, name in STANDARD_TYPES.items())
+    unstyled = set()
+    for path, name in standard.items():
+        if name and not TOKEN_CSS.get(path):
+            unstyled.add(name)
+    samples = [
+        ("python", "def f():\n    return 'x'  # komentarz"),
+        ("html", "<div class='x'>hi</div>"),
+        ("json", '{"a": 1, "b": true}'),
+        ("sql", "SELECT id FROM t WHERE x = 'y';"),
+        ("go", 'func main() { fmt.Println("hi") }'),
+        ("yaml", "# komentarz\nklucz: 1"),
+        ("bash", "echo hi | grep x"),
+    ]
+    for language, code in samples:
+        html = highlight(code, language, inline=False)
+        groups = re.findall(r'class="([^"]+)"', html)
+        assert groups, "brak klas dla %s" % language
+        for group in groups:
+            members = group.split()
+            assert any(("span.%s{" % c) in css for c in members) or \
+                all(_is_unstyled(c, unstyled) for c in members), \
+                "klasa %r (%s) nie ma reguły w style_css" % (group, language)
+
+
+def _is_unstyled(css_class, unstyled_names):
+    """True, gdy klasa (lub jej bazowa część) jest świadomie bez reguły."""
+    if css_class in unstyled_names:
+        return True
+    # Klasy złożone typu "l-Scalar-Plain": Pygments dokleja sufiksy do nazwy
+    # bazowej ("l"); decyduje część bazowa.
+    base = css_class.split("-")[0]
+    return base in unstyled_names
 
 
 def test_highlighting_escapes_dangerous_code():
@@ -306,32 +409,50 @@ def test_language_aliases():
     assert normalise_language("JS") == "javascript"
     assert normalise_language("shell") == "bash"
     assert normalise_language("c++") == "cpp"
-    assert normalise_language("unknown-lang") == "text"
     assert normalise_language("") == "text"
+    # Nieznana nazwa przechodzi do Pygments (575 lexerów); dopiero gdy ten
+    # jej nie zna, _lexer() wraca do TextLexer - patrz test poniżej.
+    assert normalise_language("unknown-lang") == "unknown-lang"
 
 
 def test_unknown_language_falls_back_to_escaped_text():
-    assert highlight("a < b", "brainfuck") == "a &lt; b"
+    assert highlight("a < b", "not-a-real-language") == "a &lt; b"
 
 
 def test_markup_and_data_languages():
-    assert "tok-tag" in highlight("<div class='x'>hi</div>", "html")
-    json_html = highlight('{"a": 1, "b": true}', "json")
-    assert "tok-key" in json_html and "&quot;a&quot;" in json_html
-    assert "tok-kw" in json_html                   # true/false/null
-    assert "tok-com" in highlight("# komentarz\nklucz: 1", "yaml")
-    assert "tok-key" in highlight("body { color: #fff; }", "css")
-    assert "tok-tag" in highlight("[sekcja]\nklucz=1", "ini")
+    html = highlight("<div class='x'>hi</div>", "html", inline=False)
+    assert 'class="nt"' in html                      # tag
+    assert 'class="na"' in html                      # atrybut
+    json_html = highlight('{"a": 1, "b": true}', "json", inline=False)
+    assert 'class="nt"' in json_html and "&quot;a&quot;" in json_html
+    assert 'class="kc"' in json_html                 # true/false/null
+    assert 'class="c1"' in highlight("# komentarz\nklucz: 1", "yaml",
+                                     inline=False)
+    assert 'class="nt"' in highlight("body { color: #fff; }", "css",
+                                     inline=False)
+    assert 'class="k"' in highlight("[sekcja]\nklucz=1", "ini", inline=False)
 
 
 def test_sql_and_go_highlighting():
-    upper = highlight("SELECT id FROM users WHERE name = 'x';", "sql")
-    lower = highlight("select id from users where name = 'x';", "sql")
-    # SQL keywords are case-insensitive - both forms must be recognised.
-    assert upper.count("tok-kw") == lower.count("tok-kw") == 3
-    assert "tok-str" in upper
-    go = highlight('func main() { fmt.Println("hi") }', "go")
-    assert "tok-kw" in go and "tok-fn" in go and "tok-bi" in go
+    upper = highlight("SELECT id FROM users WHERE name = 'x';", "sql",
+                      inline=False)
+    lower = highlight("select id from users where name = 'x';", "sql",
+                      inline=False)
+    # Słowa kluczowe SQL są case-insensitive - obie formy rozpoznawane tak samo.
+    assert upper.count('class="k"') == lower.count('class="k"') == 3
+    assert 'class="s1"' in upper
+    go = highlight('func main() { fmt.Println("hi") }', "go", inline=False)
+    assert 'class="kd"' in go and 'class="nx"' in go
+
+
+def test_light_theme_uses_a_different_palette():
+    dark = highlight("def f(): pass", "python")
+    light = highlight("def f(): pass", "python", light=True)
+    assert dark != light
+    assert "#569cd6" in dark                  # keyword: VS Code Dark
+    assert "#0000ff" in light                 # keyword: VS Code Light+
+    assert "background-color:#1a1a1a" in style_css()
+    assert "background-color:#f5f5f5" in style_css(light=True)
 
 
 def test_highlight_is_deterministic_and_bounded():
@@ -339,7 +460,11 @@ def test_highlight_is_deterministic_and_bounded():
     first = highlight(code, "python")
     second = highlight(code, "python")
     assert first == second
-    assert len(languages()) >= 12
+    # Pygments pokrywa setki języków; test pilnuje regresji do podzbioru.
+    names = language_names()
+    assert len(names) >= 100
+    for required in ("python", "go", "json", "sql", "html", "css"):
+        assert required in names
 
 
 def test_empty_code():

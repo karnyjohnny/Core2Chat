@@ -12,7 +12,7 @@ from typing import Dict
 
 # ---------------------------------------------------------------- app identity
 APP_NAME = "Core2Chat"
-APP_VERSION = "0.1.1"
+APP_VERSION = "0.1.2"
 APP_ORGANIZATION = "Core2Chat"
 APP_DOMAIN = "core2chat.app"
 APP_DESCRIPTION = "Lightweight native desktop AI chat client"

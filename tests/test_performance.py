@@ -31,6 +31,7 @@ def context(tmp_path, monkeypatch):
 
     ctx = AppContext()
     ctx.initialize()
+    ctx.settings.close_action = "exit"   # hermetic X: no ask-dialog
     yield ctx
     ctx.shutdown()
 
@@ -320,6 +321,7 @@ def test_idle_footprint_is_reported_and_bounded(context, qapp_module):
     from services.export_import import ExportService, ImportService
     from services.session_service import SessionService
 
+    before_mb = resident_memory_bytes() / MB
     window = MainWindow(context, ChatService(context), SessionService(context),
                         ExportService(context), ImportService(context))
     window.show()
@@ -329,11 +331,18 @@ def test_idle_footprint_is_reported_and_bounded(context, qapp_module):
     idle_mb = resident_memory_bytes() / MB
     window.close()
     window.deleteLater()
-    # This process also carries pytest and the test modules, so the assertion
-    # is a regression guard rather than the product claim; the honest number is
-    # printed by tests/perf_benchmark.py.
-    assert idle_mb < 220, "idle RSS %.1f MB is far above expectations" % idle_mb
-    print("\nidle RSS in test process: %.1f MB" % idle_mb)
+    # Proces pytesta niesie pamięć wszystkich wcześniejszych testów (m.in.
+    # Pygments ~7 MB po testach Markdowna), więc bezwzględne RSS nie jest tu
+    # produktem - uczciwą liczbę drukuje tests/perf_benchmark.py w czystym
+    # procesie. Ten strażnik spina koszt SAMEGO stosu okna (mierzono:
+    # ~17-21 MB w czystym procesie; stary wyciek widgetów dokładał 3,6 MB
+    # na cykl zamknij/otwórz).
+    overhead_mb = idle_mb - before_mb
+    assert idle_mb < 320, "idle RSS %.1f MB is far above expectations" % idle_mb
+    assert overhead_mb < 60, \
+        "stos MainWindow dołożył %.1f MB - oczekiwano <60 MB" % overhead_mb
+    print("\nidle RSS in test process: %.1f MB (stos okna: +%.1f MB)"
+          % (idle_mb, overhead_mb))
 
 
 def test_repeated_window_cycles_do_not_leak(qapp_module, context, qt_pump):

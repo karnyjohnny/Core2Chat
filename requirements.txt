@@ -3,11 +3,16 @@
 # CI uses 3.8.10 - the last 3.8 release with official python.org binaries
 # (3.8.11+ are source-only, so actions/setup-python cannot install them).
 # A local unofficial 3.8.20 build works too: the code targets 3.8 syntax.
-# Dependency policy (spec §68): keep the runtime footprint minimal.
+# Dependency policy (spec §68): keep the runtime footprint minimal - exactly
+# three packages, nothing else:
 #   * PyQt5 is the GUI toolkit (QtWebEngine/PySide/PyQt6 are forbidden).
 #   * httpx is the only HTTP stack; it is imported lazily so an idle app that
 #     has not sent a request yet does not pay its ~11 MB RSS cost.
+#   * Pygments does syntax highlighting (575 lexers instead of a hand-rolled
+#     15-language regex table); it is imported lazily by utils/highlight.py
+#     and degrades to escaped plain text if ever missing from a bundle.
 # Everything else is Python standard library (sqlite3, ctypes, hashlib, json).
 
 PyQt5==5.15.11
 httpx==0.28.1
+Pygments==2.17.2

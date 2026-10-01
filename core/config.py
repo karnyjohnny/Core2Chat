@@ -21,6 +21,31 @@ from models.chat_models import StateMode
 
 _lock = threading.RLock()
 
+#: Values accepted by :attr:`AppSettings.close_action`.
+CLOSE_ACTION_ASK = "ask"
+CLOSE_ACTION_MINIMIZE = "minimize"
+CLOSE_ACTION_EXIT = "exit"
+CLOSE_ACTIONS = (CLOSE_ACTION_ASK, CLOSE_ACTION_MINIMIZE, CLOSE_ACTION_EXIT)
+def close_action_to_store(choice: str) -> str:
+    """Map a dialog answer onto the storable ``close_action`` value.
+
+    Lives in :mod:`core.config` (not in the dialog) so window code never needs
+    to import a Qt module just to persist a string, and so a stubbed dialog in
+    tests cannot break the save path.
+    """
+    if choice == CLOSE_ACTION_MINIMIZE:
+        return CLOSE_ACTION_MINIMIZE
+    if choice == CLOSE_ACTION_EXIT:
+        return CLOSE_ACTION_EXIT
+    return CLOSE_ACTION_ASK
+
+
+CLOSE_ACTION_LABELS = {
+    CLOSE_ACTION_ASK: "Pytaj za każdym razem",
+    CLOSE_ACTION_MINIMIZE: "Zminimalizuj (do zasobnika, gdy dostępny)",
+    CLOSE_ACTION_EXIT: "Zamknij program",
+}
+
 def _declared_type_name(spec: Any) -> str:
     declared = spec.type
     if isinstance(declared, str):
@@ -40,7 +65,8 @@ def _as_bool(value: Any) -> bool:
 
 
 _BOOL_FIELDS = ("dark_theme", "start_minimized", "minimize_to_tray",
-                "close_to_tray", "single_instance", "auto_compact_context",
+                "close_to_tray", "tray_menu_enabled", "single_instance",
+                "auto_compact_context",
                 "count_tokens_before_send", "developer_logging",
                 "api_diagnostics", "show_thinking", "allow_legacy_models",
                 "store_remote_interactions", "prompt_on_large_context",
@@ -56,6 +82,15 @@ class AppSettings:
     start_minimized: bool = False
     minimize_to_tray: bool = True
     close_to_tray: bool = True
+    #: What the window's X button does. ``ask`` (default) shows the
+    #: Anuluj/Zminimalizuj/Zamknij dialog every time; the dialog's "zapamiętaj
+    #: wybór" checkbox writes ``minimize``/``exit`` here. Supersedes
+    #: ``close_to_tray``, which is kept only so an upgrade loses nothing.
+    close_action: str = CLOSE_ACTION_ASK
+    #: Tray context menu is opt-in: platform menus are the least reliable part
+    #: of the tray API on older Windows. Disabled means both mouse buttons
+    #: restore the window.
+    tray_menu_enabled: bool = False
     single_instance: bool = True
     portable_mode: bool = False
 
@@ -131,7 +166,29 @@ class AppSettings:
             target = cls.RENAMED_FIELDS.get(key, key)
             if target in known and target not in kwargs:
                 kwargs[target] = value
-        return cls(**kwargs)
+        cls._migrate_close_action(kwargs)
+        settings = cls(**kwargs)
+        # JSON on disk can carry "1"/"0" strings (hand-edited or written by an
+        # older build); coerce here so callers never see a truthy string where
+        # a bool is expected.
+        settings.coerce_types()
+        return settings
+
+    @staticmethod
+    def _migrate_close_action(kwargs: Dict[str, Any]) -> None:
+        """Derive ``close_action`` from the pre-0.1.2 ``close_to_tray`` flag.
+
+        A config that already carries ``close_action`` wins untouched. Fresh
+        installs keep the ``ask`` default, so the dialog appears on the first X
+        press; upgraded installs keep the behaviour the user already had.
+        """
+        if "close_action" in kwargs:
+            return
+        if "close_to_tray" not in kwargs:
+            return
+        kwargs["close_action"] = (CLOSE_ACTION_MINIMIZE
+                                  if _as_bool(kwargs.get("close_to_tray"))
+                                  else CLOSE_ACTION_EXIT)
 
     # ------------------------------------------------------------- validation
     def coerce_types(self) -> List[str]:
@@ -208,6 +265,9 @@ class AppSettings:
         clamp("min_cached_tokens", 0, 10000000)
         clamp("sidebar_width", 160, 600)
 
+        if self.close_action not in CLOSE_ACTIONS:
+            errors.append("close_action: nieznana wartość, ustawiono ask")
+            self.close_action = CLOSE_ACTION_ASK
         if self.message_spacing not in ("compact", "comfortable"):
             errors.append("message_spacing: nieznana wartość, ustawiono compact")
             self.message_spacing = "compact"

@@ -198,10 +198,33 @@ def test_activated_signal_is_routed(owner, qapp):
     assert calls == ["show"]
     tray._on_activated(QSystemTrayIcon.MiddleClick)
     assert calls == ["show", "new", "focus"]
-    tray._on_activated(QSystemTrayIcon.Context)      # Qt opens the menu itself
+    # v0.1.2: menu jest domyślnie wyłączone, więc prawy klik i dwuklik
+    # też przywracają okno (ikona zachowuje się identycznie dla obu przycisków).
+    tray._on_activated(QSystemTrayIcon.Context)
+    assert calls == ["show", "new", "focus", "show"]
+    tray._on_activated(QSystemTrayIcon.DoubleClick)
+    assert calls == ["show", "new", "focus", "show", "show"]
     tray.shutdown()
     tray._on_activated(QSystemTrayIcon.Trigger)      # no-op after shutdown
-    assert calls == ["show", "new", "focus"]
+    assert calls == ["show", "new", "focus", "show", "show"]
+
+
+def test_context_with_menu_enabled_opens_menu_without_dispatch(owner, qapp):
+    """Gdy menu jest włączone, Context otwiera je Qt - tray nic nie dispatchuje."""
+    tray = TrayManager(owner)
+    calls = []
+    tray.set_menu_enabled(True)   # preferencja sprzed build: menu zostanie dołączone
+    tray.build(on_show=lambda: calls.append("show"),
+               on_new_chat=lambda: calls.append("new"),
+               on_new_chat_focused=lambda: calls.append("focus"),
+               on_settings=lambda: calls.append("settings"),
+               on_exit=lambda: calls.append("exit"))
+    assert tray.menu_enabled is True
+    tray._on_activated(QSystemTrayIcon.Context)      # Qt opens the menu itself
+    assert calls == []
+    tray._on_activated(QSystemTrayIcon.Trigger)      # lewy klik wciąż pokazuje
+    assert calls == ["show"]
+    tray.shutdown()
 
 
 def test_load_icon_never_returns_none(qapp):

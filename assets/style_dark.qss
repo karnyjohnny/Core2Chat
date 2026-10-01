@@ -251,75 +251,69 @@ QTextBrowser#MessageBody {
     selection-background-color: {{ACCENT}};
 }
 
-/* Markdown content rendered inside QTextDocument */
-QTextBrowser#MessageBody a { color: {{ACCENT}}; text-decoration: none; }
-QTextBrowser#MessageBody h1 { font-size: 15pt; margin: 6px 0 4px 0; }
-QTextBrowser#MessageBody h2 { font-size: 13pt; margin: 6px 0 4px 0; }
-QTextBrowser#MessageBody h3 { font-size: 12pt; margin: 5px 0 3px 0; }
-QTextBrowser#MessageBody h4, QTextBrowser#MessageBody h5,
-QTextBrowser#MessageBody h6 { font-size: 11pt; margin: 4px 0 2px 0; }
-QTextBrowser#MessageBody p { margin: 2px 0; }
-QTextBrowser#MessageBody blockquote {
-    color: {{MUTED}};
-    border-left: 2px solid {{BORDER}};
-    margin: 3px 0 3px 4px;
-    padding-left: 6px;
-}
-QTextBrowser#MessageBody pre {
+/* Markdown content lives inside a QTextDocument. Qt Style Sheets never reach
+   document content (verified on PyQt5 5.15), so those rules are generated per
+   document in gui/theme.py::message_document_css() and installed with
+   QTextDocument::setDefaultStyleSheet(). Only *widget* chrome is styled here. */
+
+/* Code block widget: header bar + horizontally scrolling body */
+QFrame#CodeBlock {
     background-color: {{CODE_BG}};
     border: 1px solid {{BORDER}};
-    margin: 3px 0;
-    padding: 4px;
-    font-family: "Cascadia Mono", "Consolas", "DejaVu Sans Mono", monospace;
-    font-size: {{CODE_FONT_SIZE}}pt;
-}
-QTextBrowser#MessageBody code {
-    font-family: "Cascadia Mono", "Consolas", "DejaVu Sans Mono", monospace;
-    font-size: {{CODE_FONT_SIZE}}pt;
-}
-QTextBrowser#MessageBody code.inline {
-    background-color: {{CODE_BG}};
-    padding: 0 2px;
-}
-QTextBrowser#MessageBody p.code-head {
-    background-color: {{CODE_HEAD_BG}};
-    border: 1px solid {{BORDER}};
-    border-bottom: none;
-    margin: 4px 0 0 0;
-    padding: 1px 4px;
-    font-size: {{META_FONT_SIZE}}pt;
-    color: {{MUTED}};
-}
-QTextBrowser#MessageBody span.code-lang { color: {{MUTED}}; font-weight: 600; }
-QTextBrowser#MessageBody span.code-lines { color: {{MUTED}}; margin-left: 6px; }
-QTextBrowser#MessageBody a.code-copy { color: {{ACCENT}}; margin-left: 10px; }
-QTextBrowser#MessageBody table.md-table {
-    border-collapse: collapse;
-    margin: 4px 0;
-}
-QTextBrowser#MessageBody table.md-table th {
-    background-color: {{CODE_BG}};
-    border: 1px solid {{BORDER}};
-    padding: 2px 6px;
-    font-weight: 600;
-}
-QTextBrowser#MessageBody table.md-table td {
-    border: 1px solid {{BORDER}};
-    padding: 2px 6px;
+    border-radius: 4px;
 }
 
-/* Syntax highlighting tokens */
-.tok-kw  { color: #569cd6; font-weight: 600; }
-.tok-bi  { color: #4ec9b0; }
-.tok-str { color: #ce9178; }
-.tok-com { color: #6a9955; font-style: italic; }
-.tok-num { color: #b5cea8; }
-.tok-fn  { color: #dcdcaa; }
-.tok-dec { color: #c586c0; }
-.tok-tag { color: #569cd6; }
-.tok-attr{ color: #9cdcfe; }
-.tok-key { color: #9cdcfe; }
-.tok-pun { color: #808080; }
+QWidget#CodeBlockHeader {
+    background-color: {{CODE_HEAD_BG}};
+    border: none;
+    border-bottom: 1px solid {{BORDER}};
+    border-top-left-radius: 4px;
+    border-top-right-radius: 4px;
+}
+
+QLabel#CodeBlockLang {
+    background: transparent;
+    color: {{TEXT}};
+    font-size: {{META_FONT_SIZE}}pt;
+    font-weight: 600;
+}
+
+QLabel#CodeBlockInfo {
+    background: transparent;
+    color: {{MUTED}};
+    font-size: {{META_FONT_SIZE}}pt;
+}
+
+QPushButton#CodeCopyButton {
+    background-color: {{SURFACE}};
+    border: 1px solid {{BORDER}};
+    border-radius: 3px;
+    color: {{TEXT}};
+    font-size: {{META_FONT_SIZE}}pt;
+    padding: 1px 8px;
+}
+
+QPushButton#CodeCopyButton:hover {
+    background-color: {{ROW_HOVER}};
+    border-color: {{ACCENT}};
+    color: {{TEXT}};
+}
+
+QPushButton#CodeCopyButton:pressed {
+    background-color: {{ACCENT}};
+    color: {{SELECTED_TEXT}};
+}
+
+QTextBrowser#CodeBlockBody {
+    background-color: {{CODE_BG}};
+    border: none;
+    color: {{CODE_FG}};
+    font-family: "Consolas", "Cascadia Mono", "DejaVu Sans Mono", monospace;
+    font-size: {{CODE_FONT_SIZE}}pt;
+    padding: 4px 6px;
+    selection-background-color: {{ACCENT}};
+    selection-color: {{SELECTED_TEXT}};
+}
 
 /* -------------------------------------------------------------- misc */
 #TopBar {

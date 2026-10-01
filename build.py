@@ -2,15 +2,18 @@
 
     python build.py --mode release     onedir, windowed (default)
     python build.py --mode debug       onedir, console + verbose logging
-    python build.py --mode onefile     single executable
+    python build.py --mode onefile     single executable (via the same spec)
     python build.py --check            validate the spec without building
+    python build.py --verify-dist      dependency-closure check of dist/
 
-The script never embeds credentials: it refuses to run when a secret-looking
-file is present in the project tree (defence against packaging a stray key).
+Every mode runs ``pyinstaller.spec``; ``--mode onefile`` only sets
+``CORE2CHAT_ONEFILE=1`` so that both outputs share one definition of hidden
+imports, datas, excludes and bundle trimming. The script never embeds
+credentials: it refuses to run when a secret-looking file is present in the
+project tree or in git history (defence against packaging a stray key).
 """
 
 import argparse
-import json
 import os
 import re
 import shutil
@@ -153,28 +156,30 @@ def scan_for_secrets() -> tuple:
 
 
 def scan_git_history() -> List[str]:
-    """Scan committed history, not just the working tree."""
+    """Scan committed history, not just the working tree.
+
+    A key committed and later deleted is still public once pushed. Each blob is
+    scanned individually so the ``allow-fake-secret`` marker of its own file is
+    honoured (a plain ``git log -p`` loses file boundaries and would flag the
+    deliberate fake credentials used by the redaction tests).
+    """
     if not os.path.isdir(os.path.join(PROJECT_ROOT, ".git")):
         return []
 
-    def git(args: List[str]) -> bytes:
+    def git(args: List[str]) -> str:
         try:
-            # Używamy capture_output=True bez text=True, aby otrzymywać surowe bajty
             completed = subprocess.run(["git"] + args, cwd=PROJECT_ROOT,
-                                       capture_output=True, timeout=600)
+                                       capture_output=True, text=True,
+                                       timeout=600)
             return completed.stdout
         except (OSError, subprocess.SubprocessError):
-            return b""
+            return ""
 
-    # Dekodujemy listę rewizji (bezpieczne ASCII)
-    revisions = git(["rev-list", "--all"]).decode('ascii', errors='ignore').split()
+    revisions = git(["rev-list", "--all"]).split()
     offenders: List[str] = []
     seen_blobs = set()
-
     for revision in revisions:
-        # Pobieramy listę plików w rewizji
-        entries = git(["ls-tree", "-r", revision]).decode('utf-8', errors='ignore').splitlines()
-        
+        entries = git(["ls-tree", "-r", revision]).splitlines()
         for entry in entries:
             parts = entry.split("\t")
             if len(parts) != 2:
@@ -183,35 +188,19 @@ def scan_git_history() -> List[str]:
             fields = meta.split()
             if len(fields) < 3:
                 continue
-            
             blob = fields[2]
             if blob in seen_blobs:
                 continue
             seen_blobs.add(blob)
-            
-            # Filtrujemy tylko pliki tekstowe (zgodnie z listą rozszerzeń)
             if os.path.splitext(path)[1].lower() not in SCANNED_EXTENSIONS:
                 continue
-            
-            # Pobieramy zawartość jako bajty i dekodujemy z ignorowaniem błędów
-            content_bytes = git(["cat-file", "blob", blob])
-            content = content_bytes.decode('utf-8', errors='ignore')
-            
-            # Sprawdzanie wzorców
+            content = git(["cat-file", "blob", blob])
             if not any(pattern.search(content) for pattern in SECRET_PATTERNS):
                 continue
-            
-            # Ignorowanie plików z markerem bezpieczeństwa
             if ALLOW_MARKER in content:
-                continue
-                
+                continue          # declared fake fixture
             offenders.append("%s (rewizja %s)" % (path, revision[:8]))
-            
-            # Ograniczenie liczby zgłoszeń
-            if len(offenders) >= 10:
-                return offenders
-
-    return offenders
+    return offenders[:10]
 
 
 def _system_library_dirs() -> List[str]:
@@ -316,9 +305,42 @@ def verify_dist(dist_dir: str) -> tuple:
     return True, notes
 
 
-def run(cmd: List[str]) -> int:
+def onefile_binary_path() -> str:
+    """Path of the single-file executable produced by --mode onefile."""
+    name = "Core2Chat.exe" if os.name == "nt" else "Core2Chat"
+    return os.path.join(PROJECT_ROOT, "dist", name)
+
+
+def verify_onefile(binary: str) -> tuple:
+    """Sanity-check the onefile output.
+
+    The ELF dependency-closure walk does not apply here: everything is packed
+    inside one self-extracting executable, so there is no directory of shared
+    objects to inspect without running it. What can be checked statically is
+    that the binary exists and has a plausible size; the real verification is
+    ``Core2Chat.exe --diagnostics`` (self-extraction + interpreter + Qt load).
+    """
+    if not os.path.isfile(binary):
+        return False, ["brak binarium onefile: %s" % binary]
+    size_mb = os.path.getsize(binary) / (1024.0 * 1024.0)
+    notes = ["binarium onefile: %s (%.1f MB)" % (binary, size_mb)]
+    if size_mb < 20:
+        return False, notes + [
+            "BŁĄD: %.1f MB to zbyt mało jak na paczkę z PyQt5 - build "
+            "prawdopodobnie nie zawiera Qt" % size_mb]
+    notes.append("domknięcie zależności ELF nie dotyczy onefile (wszystko w "
+                 "jednym samorozpakowującym się pliku); weryfikacja: "
+                 "--diagnostics na systemie docelowym")
+    return True, notes
+
+
+def run(cmd: List[str], env: Dict[str, str] = None) -> int:
     print("+ " + " ".join(cmd))
-    return subprocess.call(cmd, cwd=PROJECT_ROOT)
+    full_env = None
+    if env:
+        full_env = dict(os.environ)
+        full_env.update(env)
+    return subprocess.call(cmd, cwd=PROJECT_ROOT, env=full_env)
 
 
 def main() -> int:
@@ -332,7 +354,16 @@ def main() -> int:
     args = parser.parse_args()
 
     if args.verify_dist:
-        ok, notes = verify_dist(os.path.join(PROJECT_ROOT, "dist", "Core2Chat"))
+        dist_dir = os.path.join(PROJECT_ROOT, "dist", "Core2Chat")
+        binary = onefile_binary_path()
+        if os.path.isdir(dist_dir):
+            ok, notes = verify_dist(dist_dir)
+        elif os.path.isfile(binary):
+            ok, notes = verify_onefile(binary)
+        else:
+            ok, notes = False, [
+                "brak wyników builda w dist/ (oczekiwano katalogu "
+                "dist/Core2Chat albo binarium %s)" % binary]
         for note in notes:
             print("verify-dist: %s" % note)
         return 0 if ok else 4
@@ -374,35 +405,42 @@ def main() -> int:
         print("PyInstaller is not installed. Run: pip install -r requirements-dev.txt")
         return 3
 
+    # Every mode runs the SAME spec; onefile is selected by an environment
+    # variable so that trimming, assets and excludes have one definition.
+    # (Raw `--onefile` flags against main.py used to bypass all of that and
+    # produced a second, different bundle.)
+    command = [sys.executable, "-m", "PyInstaller", "--clean", "--noconfirm",
+               "pyinstaller.spec"]
+    build_env = None
     if args.mode == "onefile":
-        command = [sys.executable, "-m", "PyInstaller", "--clean", "--noconfirm",
-                   "--onefile", "--name", "Core2Chat",
-                   "--icon", os.path.join("assets", "icon.ico"),
-                   "--add-data", "assets%sassets" % os.pathsep,
-                   "--exclude-module", "PyQt5.QtWebEngine",
-                   "--exclude-module", "PyQt5.QtWebKit",
-                   "main.py"]
-        if os.name != "nt":
-            command = [c for c in command if c != "--icon"] + []
-    else:
-        command = [sys.executable, "-m", "PyInstaller", "--clean", "--noconfirm",
-                   "pyinstaller.spec"]
-        if args.mode == "debug":
-            print("debug mode: patching console=True is manual; set "
-                  "CORE2CHAT_CONSOLE_LOG=1 at runtime for verbose logs")
+        build_env = {"CORE2CHAT_ONEFILE": "1"}
+    elif args.mode == "debug":
+        print("debug mode: verbose runtime logging via "
+              "CORE2CHAT_CONSOLE_LOG=1; console=True is a manual spec edit")
 
-    code = run(command)
+    code = run(command, env=build_env)
     if code != 0:
         return code
-    ok, notes = verify_dist(os.path.join(PROJECT_ROOT, "dist", "Core2Chat"))
+
+    if args.mode == "onefile":
+        binary = onefile_binary_path()
+        ok, notes = verify_onefile(binary)
+        for note in notes:
+            print("verify-dist: %s" % note)
+        if not ok:
+            return 4
+        print("\nbuild finished: %s" % binary)
+        print("smoke test: \"%s\" --diagnostics" % binary)
+        return 0
+
+    out_dir = os.path.join(PROJECT_ROOT, "dist", "Core2Chat")
+    ok, notes = verify_dist(out_dir)
     for note in notes:
         print("verify-dist: %s" % note)
     if not ok:
         print("ABORT: usunięto bibliotekę, której coś jeszcze używa.")
         return 4
-    out_dir = os.path.join(PROJECT_ROOT, "dist", "Core2Chat")
-    print("\nbuild finished: %s" % (out_dir if os.path.isdir(out_dir)
-                                    else os.path.join(PROJECT_ROOT, "dist")))
+    print("\nbuild finished: %s" % out_dir)
     print("smoke test: %s --diagnostics" %
           os.path.join(out_dir, "Core2Chat.exe" if os.name == "nt" else "Core2Chat"))
     return 0

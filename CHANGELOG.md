@@ -4,6 +4,164 @@ Wszystkie istotne zmiany w projekcie Core2Chat.
 Format zgodny z [Keep a Changelog](https://keepachangelog.com/pl-PL/1.1.0/),
 wersjonowanie zgodnie z [SemVer](https://semver.org/lang/pl/).
 
+## [0.1.2] - 2026-09-29
+
+Kolorowanie składni na Pygments, dialog zamknięcia okna, menu tray jako funkcja
+zbuforowana, naprawa CI po pierwszych uruchomieniach u użytkownika i build
+onefile z tego samego spec. Całość zweryfikowana zestawem testów:
+**518 zebranych = 517 passed + 1 skipped** (ścieżka Win32), ~74 s.
+
+### Dodane
+
+- **Pygments 2.17.2 jako trzecia (ostatnia) zależność runtime** — zatwierdzone
+  przez użytkownika odstępstwo od reguły „dwóch zależności". Zamiast ręcznej
+  tabeli regexów dla 15 języków: 575 lexerów i prawdziwa tokenizacja
+  (zagnieżdżone łańcuchy, komentarze wieloliniowe, heredocs).
+  `utils/highlight.py` przepisany:
+  - własny styl Pygments `Core2Style` (paleta VS Code Dark) +
+    `TOKEN_STYLE_LIGHT` (VS Code Light+) — żaden z 48 wbudowanych styli nie
+    pasował do GUI;
+  - dwa tryby renderowania z JEDNEJ tabeli tokenów: `inline=True`
+    (`style="color:…"` — Qt resolwuje zawsze) i `inline=False` (klasy
+    Pygments + `style_css()` instalowany przez
+    `QTextDocument.setDefaultStyleSheet`);
+  - import leniwy i degradacja bez awarii: brak Pygments w paczce → kod
+    renderuje się jako eskejpowany tekst bez kolorów, wiadomość nigdy nie znika;
+  - `language_names()`, `stats()`, `backend()` dla diagnostyki i ustawień.
+- **Dialog zamknięcia okna** (`gui/close_dialog.py`): „Co ma zrobić program po
+  kliknięciu X?" — Anuluj / Zminimalizuj / Zamknij program + „Zapamiętaj wybór
+  (nie pytaj ponownie)". Domyślny przycisk: Zminimalizuj (bezpieczna, odwracalna
+  odpowiedź). Bez dostępnego tray „Zminimalizuj" chowa okno na pasek zadań —
+  dialog i status mówią to wprost.
+- Ustawienie `close_action` (`ask` / `minimize` / `exit`, domyślnie `ask`) +
+  migracja z przed-0.1.2 flagi `close_to_tray` (True→minimize, False→exit;
+  jawny `close_action` zawsze wygrywa). `close_to_tray` jest utrzymywana w
+  synchronizacji, żeby downgrade zachowywał się sensownie.
+- **Ustawienia**: combo „Zachowanie zamknięcia okna" z objaśnieniem oraz
+  checkbox „Menu w ikonie zasobnika" (domyślnie WYŁĄCZONY, oznaczony
+  „⚠ funkcja zbufowana (eksperymentalna)"). Pole „Dostawca" zniknęło —
+  aplikacja jest Gemini-only (etykieta „Google Gemini (Interactions API)").
+- `TrayManager.set_menu_enabled()` — włączenie/wyłączenie menu w locie, bez
+  przebudowy tray; preferencja ustawiona przed `build()` jest zapamiętywana.
+- `build.py --mode onefile` buduje z tego samego `pyinstaller.spec`
+  (przez `CORE2CHAT_ONEFILE=1`), a `--verify-dist` rozpoznaje binarium onefile:
+  istnienie + rozsądny rozmiar + uczciwa nota, że domknięcie ELF nie dotyczy
+  pojedynczego samorozpakowującego się pliku (weryfikacja: `--diagnostics`
+  na systemie docelowym).
+- `tests/test_close_dialog.py` (17): mapowanie i migracja ustawień, UI dialogu
+  (domyślny przycisk, handlery, „zapamiętaj"), `resolve_close_action` dla
+  każdej konfiguracji, `closeEvent` (minimize chowa i zachowuje okno / exit
+  robi teardown i `shutdown_requested` / cancel zostawia otwarte / brak tray →
+  pasek zadań), trwałość „zapamiętaj" na dysku, raportowanie błędu zapisu.
+- **Tripwire w conftest**: dowolny modalny dialog w teście headless
+  (`QDialog.exec_`, statyczne `QMessageBox`/`QInputDialog`/`QFileDialog`) →
+  natychmiastowy `AssertionError` zamiast zawieszenia do timeoutu CI.
+- CI: drugi artefakt builda — `Core2Chat-windows-x64-onefile` (obok onedir);
+  smoke testy `--diagnostics` obu binariów; weryfikacja paczki przez `find`
+  po całym drzewie (webengine/webkit/qt3d/qtquick/qtqml/pyside/pyqt6),
+  obecność `qwindows.dll` i zasobów.
+
+### Naprawione
+
+- **Zestaw testów zawieszał się na `MainWindow.close()`**: po dodaniu dialogu
+  zamknięcia domyślne `close_action="ask"` otwierało modal przy każdym
+  `window.close()` w testach i w `tests/perf_benchmark.py` (który odpala CI) →
+  nieskończona blokada. Naprawa trzywarstwowa: tripwire w conftest (fail fast
+  z instrukcją), jawne `close_action="exit"` w 6 fixture/harnessach, testy
+  dialogu z podstawioną klasą (zasada #10 z `.qwen/QWEN.md`).
+- **Bloki kodu nie miały tła ani kolorów składni** (wada 0.1.1): QSS nie sięga
+  do wnętrza `QTextDocument`, więc reguły `.tok-*` w `style_dark.qss` były
+  martwe. Kolory idą teraz jako inline `style=` (działa zawsze) albo CSS z
+  `style_css()` instalowany przez `setDefaultStyleSheet` (selektory klas
+  zweryfikowane na PyQt5 5.15); martwe reguły QSS usunięto.
+- **`HtmlFormatter` doklejał znak nowej linii** po ostatniej linii każdego
+  bloku kodu (Pygments kończy `lineseparator`em każdą linię, niezależnie od
+  `ensurenl=False` lexera) → pusta linia na końcu każdego bloku. `highlight()`
+  usuwa ten pojedynczy `\n`, gdy źródło go nie miało; fallback `TextLexer`
+  dostaje `stripnl=False, ensurenl=False` (bloki w nieznanych językach też
+  przestały rosnąć o linię).
+- **`build.py --mode onefile` omijał spec**: surowe flagi (`--onefile`,
+  `--add-data assets`, dwa `--exclude-module`) budowały DRUGĄ, inną paczkę —
+  bez przycinania ~89 MB modułów Qt, bez jawnej listy zasobów i pełnych
+  excludes; na dodatek `verify_dist()` fałszywie zgłaszało błąd, bo `dist/Core2Chat`
+  w tym trybie jest plikiem, nie katalogiem. Oba wyjścia pochodzą teraz z
+  jednej definicji (spec + env).
+- **CI nie startowało** (logi użytkownika): `cache: pip` w `setup-python`
+  kończyło się „Could not get cache folder path"; Python `3.8.20` nie istnieje
+  w binariach python.org (3.8.11+ to wydania wyłącznie źródłowe); `3.8.10` na
+  `ubuntu-22.04` nie jest dostępny w manifeście setup-python dla tego obrazu.
+- **Pygments brakowało w `requirements.txt` i w hidden imports spec** — świeży
+  `pip install -r requirements.txt` i zamrożone EXE cicho traciłyby kolorowanie
+  składni (degradacja do plain). Pin `Pygments==2.17.2` +
+  `collect_submodules("pygments")` w spec + lock w
+  `test_requirements_pin_the_target_versions`.
+- `tests/test_markdown.py` nie zbierał się po przepisaniu highlightera
+  (import usuniętego `languages()`, asercje klas `.tok-*` w trybie inline) —
+  przepisany na nowy kontrakt, z dwiema blokadami anty-rozjazdowymi:
+  TOKEN_CSS↔STANDARD_TYPES↔`style_css()` oraz pokrycie klas realnie
+  emitowanych przez lexery (niezmapowane świadomie: dziedziczenie koloru).
+- Przestarzałe asercje w `test_regression_lock.py` (klasy `.tok-*`),
+  `test_tray.py` (stary routing prawego klika) i `test_performance.py`
+  (bezwzględny próg RSS procesu pytesta, zależny od kolejności testów —
+  teraz strażnik mierzy delta stosu okna: <60 MB).
+
+### Zmienione
+
+- **Wiadomości użytkownika bez formatowania Markdown** (czysty tekst z
+  zachowaniem podziału na linie) i **zwijane** (długie pokazują fragment z
+  przyciskiem „Pokaż więcej ▾" / „Zwiń ▴") — treść użytkownika to dane, nie
+  markup; wklejony przypadkiem Markdown nie zmienia już znaczenia tekstu.
+- **Ikony akcji przy wiadomościach są zawsze widoczne** (bez animacji hover) —
+  przewidywalny interfejs na starym sprzęcie i touchpadach.
+- **`Ctrl+C` kopiuje zaznaczony tekst w wiadomości** (`ClickFocus` +
+  `TextSelectableByKeyboard`): bez fokusu `QTextBrowser` w ogóle nie dostawał
+  zdarzeń klawiatury i kopiowanie działało wyłącznie z menu kontekstowego.
+- Bloki kodu jako osobny widget (`gui/widgets/code_block.py`): nagłówek
+  „język · N linii", przycisk „Kopiuj", poziomy przewijanie bez zawijania.
+- `MessageWidget` przepisany na segmenty (`utils/markdown.split_segments()`):
+  tekst / kod / wiadomość użytkownika — każdy segment renderowany swoim
+  trybem; `set_theme()` przełącza dark/light bez re-renderu całej historii.
+- **Menu tray domyślnie wyłączone**: platformowe menu zasobnika to najmniej
+  stabilny element tray API na Windows 7. Bez menu lewy klik, prawy klik i
+  dwuklik po prostu przywracają okno; menu można włączyć w ustawieniach
+  (oznaczone „funkcja zbufowana").
+- **Porządki Gemini-only**: usunięto wzmianki o innych dostawcach z README,
+  docstringów `BaseProvider` i pamięci projektu — warstwa `api/` to wewnętrzny
+  szew (transport + mapowanie odpowiedzi), nie zapowiedź multi-providera.
+- CI uproszczony zgodnie z logami użytkownika: bez `cache: pip`, macierz testów
+  `windows-2022/py3.8.10` + `ubuntu-22.04/py3.11` (Linux pilnuje składni 3.8,
+  nie jest runtime'm docelowym), build wyłącznie `windows-2022` (dwa artefakty
+  z jednego spec), draft release pakuje oba zipy.
+- Wersja aplikacji: **0.1.2** (`core/constants.py` — jedno źródło prawdy;
+  `--version`, About i smoke raportują ją automatycznie).
+
+### Usunięte
+
+- `cache: pip` i `cache-dependency-path` ze wszystkich kroków `setup-python`
+  w CI.
+- Build linuksowy w CI (artefakt `Core2Chat-linux-x64`) — Linux nie jest
+  wspieranym celem uruchomieniowym; testy nadal biegają na ubuntu-22.04/py3.11.
+- Wpis `ubuntu-22.04/py3.8.10` z macierzy testów (niedostępny w setup-python
+  na tym obrazie).
+- Stara gałąź onefile w `build.py` (surowe flagi PyInstallera), martwy ternary
+  w `pyinstaller.spec` i nieużywany `import json` w `build.py`.
+- Zaległa flaga `--quick-chat` z README (funkcjonalnie usunięta w 0.1.1).
+
+### Znane ograniczenia
+
+- **Build EXE niezweryfikowany w dev-kontenerze**: PyInstaller nie uruchamia
+  się na niekompletnym stdlib kontenera (reprodukowalne dla „hello world" —
+  wada środowiska, nie kodu). Weryfikacja: CI na windows-2022 + procedura
+  Windows 7 w `.github/RELEASE.md`. Zawartość paczki po przycinaniu
+  weryfikowana statycznie (13 testów spójności + `build.py --check`).
+- Pygments: ~7 MB RSS po pierwszym imporcie i ~14 ms na blok kodu przy
+  finalizacji (streaming pomija kolorowanie — 0,11 ms/blok). Uczciwy koszt
+  pokrycia 575 języków; pełne liczby w README (Wydajność).
+- RSS w spoczynku 63,2 MB vs cel ≈60 MB (pomiar Linux/offscreen); liczba nie
+  była „dociągana". Pomiar na Windows 7 do wykonania u użytkownika.
+- Brak tray → „Zminimalizuj" minimalizuje na pasek zadań (projektowo,
+  komunikowane w dialogu i na pasku stanu).
+
 ## [0.1.1] - 2026-09-29
 
 Wydanie stabilizacyjne po testach na **Windows 7 SP1 x64 / Python 3.8**.
@@ -106,12 +264,17 @@ decyzję architektoniczną o usunięciu Quick Chat (P2).
 - **Migracja bazy v2**: tabela `model_availability` (provider, model, available,
   reason, http_status, verified_at, source). Upgrade z v1 zachowuje dane
   użytkownika (test `test_upgrade_from_version_1_keeps_user_data`).
-- **Paczka PyInstaller mniejsza o 59 MB**: 182 MB → **123 MB**. Usunięto
+- **Przycinanie paczki PyInstaller**: ze zdefiniowanego bundle usunięto
   rozszerzenia PyQt5 i biblioteki Qt, których aplikacja nie importuje
   (QtQuick, QtQml, Qt3D, QtLocation, QtBluetooth, QtNfc, QtSensors,
   QtSerialPort, QtTextToSpeech, QtWebChannel, QtWebSockets, QtXmlPatterns,
   QtSvg, QtHelp, QtOpenGL, QtPrintSupport…) oraz ich wtyczki (`libqvnc`,
-  `libqwebgl`, `libqsvg`, wayland/eglfs/linuxfb). Zachowane celowo:
+  `libqwebgl`, `libqsvg`, wayland/eglfs/linuxfb). Zmierzono na
+  zainstalowanych pakietach (Linux, PyQt5 5.15.11): **≈89 MB** plików nie
+  trafi do paczki (14 MB rozszerzeń + 48 MB bibliotek Qt + 26 MB wtyczek).
+  Dokładny rozmiar EXE zweryfikuje pierwszy build w CI / na Windows 7 —
+  w kontenerze developerskim PyInstaller się nie uruchamia (niekompletny
+  stdlib, reprodukowalne dla „hello world"). Zachowane celowo:
   `qwindows`, `qoffscreen`, `qminimal`, `qico` (ikona aplikacji), `qjpeg`/
   `qgif`/`qwebp` (załączniki), `platformthemes`, `platforminputcontexts`
   (IME), `styles`, `accessiblebridge`.

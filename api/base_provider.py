@@ -1,7 +1,10 @@
-"""Abstract provider interface.
+"""Provider contract used by the Gemini adapter.
 
-The GUI and services depend only on this contract. Adding OpenAI, Anthropic
-or Ollama later means adding a new subclass - no GUI changes.
+Core2Chat is Gemini-only by decision (v0.1.2): the GUI and services talk to
+this interface rather than to the network, which keeps the API code testable
+(``tests/`` register an in-process fake provider through it) and keeps SQL and
+HTTP out of the widgets. It is an internal seam, not a promise of other
+vendors.
 """
 
 import abc

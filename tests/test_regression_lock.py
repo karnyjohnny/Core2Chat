@@ -53,6 +53,7 @@ def stack(tmp_path, monkeypatch, qapp):
 
     context = AppContext()
     context.initialize()
+    context.settings.close_action = "exit"   # hermetic X: no ask-dialog
     provider = FakeProvider()
     context.registry.register(provider)
     services = (ChatService(context), SessionService(context),
@@ -329,9 +330,12 @@ def test_python_code_block_is_highlighted(stack, qapp):
 
     html = highlight('def powitanie():\n    msg = "Witaj"\n    return msg',
                      "python")
-    assert 'tok-kw">def' in html
-    assert "tok-str" in html
-    assert "tok-fn" in html
+    # v0.1.2: kolory idą jako inline style (QSS nie sięga do wnętrza
+    # QTextDocument), paleta = VS Code Dark z utils/highlight.TOKEN_STYLE.
+    assert 'color: #569cd6">def' in html          # słowo kluczowe
+    assert 'color: #dcdcaa">powitanie' in html    # nazwa funkcji
+    assert "color: #ce9178" in html               # łańcuch
+    assert "Witaj" in html
 
 
 def test_c_code_block_is_highlighted(stack, qapp):
@@ -341,10 +345,10 @@ def test_c_code_block_is_highlighted(stack, qapp):
     source = '#include <stdio.h>\nint main(void) {\n    printf("hi\\n");\n' \
              '    /* komentarz */\n    return 0;\n}'
     html = highlight(source, "c")
-    assert 'tok-kw">int' in html
-    assert 'tok-kw">return' in html
-    assert "tok-str" in html
-    assert "tok-com" in html
+    assert 'color: #4ec9b0">int' in html          # typ
+    assert 'color: #569cd6">return' in html       # słowo kluczowe
+    assert "color: #ce9178" in html               # łańcuch
+    assert "color: #6a9955" in html               # komentarz
     assert "<stdio.h>" not in html          # escaped, not injected
     assert "&lt;stdio.h&gt;" in html
 

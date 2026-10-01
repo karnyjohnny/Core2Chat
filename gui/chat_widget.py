@@ -35,10 +35,13 @@ class ChatWidget(QWidget):
     link_clicked = pyqtSignal(str)
 
     def __init__(self, renderer: Optional[MarkdownRenderer] = None,
+                 code_font_size: int = 10, light: bool = False,
                  page_size: int = MESSAGES_PAGE_SIZE,
                  parent: Optional[QWidget] = None) -> None:
         super(ChatWidget, self).__init__(parent)
-        self.renderer = renderer or MarkdownRenderer()
+        self.light = bool(light)
+        self.code_font_size = int(code_font_size)
+        self.renderer = renderer or MarkdownRenderer(light=self.light)
         self.page_size = max(10, int(page_size))
         self.session_id: Optional[int] = None
         self._widgets: Dict[int, MessageWidget] = {}
@@ -135,7 +138,9 @@ class ChatWidget(QWidget):
             if message.id is None or message.id in self._widgets:
                 continue
             widget = MessageWidget(message, renderer=self.renderer,
-                                   show_thinking=self._show_thinking)
+                                   show_thinking=self._show_thinking,
+                                   code_font_size=self.code_font_size,
+                                   light=self.light)
             widget.action_requested.connect(self.action_requested)
             widget.link_clicked.connect(self.link_clicked)
             self._widgets[message.id] = widget
@@ -257,6 +262,16 @@ class ChatWidget(QWidget):
         self._stick_to_bottom = bool(enabled)
 
     # -------------------------------------------------------------- settings
+    def set_theme(self, light: bool = False,
+                  code_font_size: Optional[int] = None) -> None:
+        """Re-colour the transcript after a theme or code-font change."""
+        self.light = bool(light)
+        if code_font_size is not None:
+            self.code_font_size = int(code_font_size)
+        self.renderer.set_light(self.light)
+        for widget in self._widgets.values():
+            widget.set_theme(self.light, self.code_font_size)
+
     def set_show_thinking(self, enabled: bool) -> None:
         self._show_thinking = bool(enabled)
         for widget in self._widgets.values():

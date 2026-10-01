@@ -9,7 +9,14 @@ Two render modes:
 
 * ``finalize=False`` - cheap path used while streaming (code blocks are
   escaped but not syntax-highlighted);
-* ``finalize=True``  - full rendering with highlighting, used once at the end.
+* ``finalize=True``  - full rendering with Pygments highlighting, used once at
+  the end.
+
+Colours are emitted as inline ``style="color:#…"`` attributes. That is not
+stylistic: Qt resolves inline styles inside a ``QTextDocument`` but ignores
+QSS rules for document content entirely (verified on PyQt5 5.15), so a
+class-based scheme silently renders monochrome. ``utils.highlight.style_css``
+provides the matching class CSS for widgets that install a default stylesheet.
 """
 
 import re
@@ -39,6 +46,27 @@ _BOLD_RE = re.compile(r"(\*\*|__)(?=\S)(.+?)(?<=\S)\1")
 _ITALIC_RE = re.compile(r"(?<![\w*])\*(?=\S)([^*]+?)(?<=\S)\*(?![\w*])")
 _ITALIC_UNDER_RE = re.compile(r"(?<![\w_])_(?=\S)([^_]+?)(?<=\S)_(?![\w_])")
 _STRIKE_RE = re.compile(r"~~(?=\S)(.+?)(?<=\S)~~")
+
+
+SEGMENT_TEXT = "text"
+SEGMENT_CODE = "code"
+
+
+@dataclass
+class Segment:
+    """One renderable piece of a message: prose or a fenced code block."""
+
+    kind: str = SEGMENT_TEXT
+    text: str = ""
+    language: str = ""
+    code: str = ""
+    closed: bool = True
+
+    @property
+    def line_count(self) -> int:
+        if self.kind != SEGMENT_CODE or not self.code:
+            return 0
+        return self.code.count("\n") + 1
 
 
 @dataclass
@@ -93,9 +121,13 @@ def is_safe_url(url: str) -> bool:
 class MarkdownRenderer(object):
     """Stateless-ish renderer with an optional single-entry cache."""
 
-    def __init__(self, cache_size: int = 8, highlight_code: bool = True) -> None:
+    def __init__(self, cache_size: int = 8, highlight_code: bool = True,
+                 light: bool = False) -> None:
         self.cache_size = max(0, int(cache_size))
         self.highlight_code = highlight_code
+        #: Light/dark drives the Pygments palette; kept per-renderer so the
+        #: theme can be switched without touching call sites.
+        self.light = bool(light)
         self._cache: Dict[int, RenderResult] = {}
 
     # ---------------------------------------------------------------- public
@@ -108,7 +140,7 @@ class MarkdownRenderer(object):
             truncated = True
         else:
             truncated = False
-        key = hash((text, finalize))
+        key = hash((text, finalize, self.light))
         if self.cache_size and key in self._cache:
             return self._cache[key]
         blocks: List[CodeBlock] = []
@@ -123,9 +155,72 @@ class MarkdownRenderer(object):
             self._cache[key] = result
         return result
 
+    def split_segments(self, text: str) -> List["Segment"]:
+        """Split a message into text/code segments for block-level widgets.
+
+        Used by :class:`gui.message_widget.MessageWidget` to give every fenced
+        code block its own header and "Kopiuj" button. Text segments are
+        rendered with the normal block renderer, so all Markdown features keep
+        working; code segments carry the raw source (highlighting happens in
+        the widget, which owns the palette).
+        """
+        text = text or ""
+        if len(text) > CODE_BLOCK_LIMIT:
+            text = text[:CODE_BLOCK_LIMIT]
+        lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+        segments: List[Segment] = []
+        buffer: List[str] = []
+        index = 0
+
+        def flush_text() -> None:
+            if not buffer:
+                return
+            chunk = "\n".join(buffer).strip("\n")
+            if chunk.strip():
+                segments.append(Segment(kind=SEGMENT_TEXT, text=chunk))
+            del buffer[:]
+
+        while index < len(lines):
+            fence = _FENCE_RE.match(lines[index].rstrip())
+            if not fence:
+                buffer.append(lines[index])
+                index += 1
+                continue
+            flush_text()
+            marker = fence.group(1)
+            language = normalise_language(fence.group(2) or "")
+            collected: List[str] = []
+            index += 1
+            closed = False
+            while index < len(lines):
+                candidate = lines[index].rstrip()
+                close = _FENCE_RE.match(candidate)
+                if close and close.group(1)[0] == marker[0] \
+                        and len(close.group(1)) >= len(marker):
+                    index += 1
+                    closed = True
+                    break
+                collected.append(lines[index])
+                index += 1
+            code = "\n".join(collected)
+            if code.endswith("\n"):
+                code = code[:-1]
+            segments.append(Segment(kind=SEGMENT_CODE, language=language,
+                                    code=code, closed=closed))
+        flush_text()
+        return segments
+
     def render_inline(self, text: str) -> str:
         """Inline-only rendering (titles, previews, tooltips)."""
         return self._inline(text, [], True)
+
+    def set_light(self, light: bool) -> None:
+        """Switch the syntax palette (theme change) and drop cached HTML."""
+        light = bool(light)
+        if light == self.light:
+            return
+        self.light = light
+        self.clear_cache()
 
     def clear_cache(self) -> None:
         self._cache.clear()
@@ -283,7 +378,7 @@ class MarkdownRenderer(object):
                 '<a class="code-copy" href="%s">Kopiuj</a></p>'
                 % (escape(label), lines, copy_href))
         if finalize and self.highlight_code:
-            body = highlight(code, language)
+            body = highlight(code, language, inline=True, light=self.light)
         else:
             body = escape(code)
         return '%s<pre class="code-block"><code>%s</code></pre>' % (head, body)

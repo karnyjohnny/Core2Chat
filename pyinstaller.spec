@@ -13,11 +13,16 @@ Use the helper script, which pins the mode and prints the resulting paths::
     python build.py --mode debug        # onedir, console + verbose logging
     python build.py --mode onefile      # single executable (slower cold start)
 
-Equivalent raw commands::
+Both modes run THIS spec: onefile is selected by the environment variable
+``CORE2CHAT_ONEFILE=1`` (set by build.py), so hidden imports, datas, excludes
+and the bundle trimming below are identical for the two outputs. Equivalent
+raw commands::
 
     pyinstaller --clean --noconfirm pyinstaller.spec
-    pyinstaller --clean --noconfirm --onefile --name Core2Chat ^
-        --icon assets/icon.ico --add-data "assets;assets" main.py
+    set CORE2CHAT_ONEFILE=1 && pyinstaller --clean --noconfirm pyinstaller.spec
+
+Do NOT build onefile with raw ``--onefile`` flags against main.py: that path
+silently skips the trimming and the explicit asset list defined here.
 
 onedir is the recommended mode for Windows 7: it starts faster than onefile
 (no self-extraction step) and keeps Qt plugins on disk where they are found
@@ -53,6 +58,11 @@ HIDDEN_IMPORTS = [
     "httpx", "httpcore", "h11", "certifi", "idna", "sniffio", "anyio",
     "sqlite3", "ctypes", "encodings.idna",
 ]
+# Pygments resolves lexers/styles dynamically (by name, at runtime), so every
+# submodule must travel in the bundle - otherwise the frozen app silently
+# falls back to uncoloured code. hooks-contrib has a pygments hook, but the
+# explicit list makes the requirement visible and hook-version-independent.
+HIDDEN_IMPORTS += collect_submodules("pygments")
 HIDDEN_IMPORTS += collect_submodules("PyQt5", filter=
                                       lambda name: "QtWebEngine" not in name
                                       and "QtWebKit" not in name
@@ -75,7 +85,8 @@ EXCLUDES = [
 
 # PyQt5 binaries that Core2Chat never imports. The application uses exactly
 # QtCore, QtGui and QtWidgets; everything else is dead weight in the bundle
-# (measured: 52 MB of PyQt5 extensions plus their Qt libraries).
+# (measured on installed PyQt5 5.15.11, Linux: ~14 MB of PyQt5 extensions,
+# ~48 MB of Qt libraries and ~26 MB of plugins - ~89 MB that never ships).
 #
 # Removal is verified after the build by `build.py --verify-dist`, which walks
 # the dynamic dependency graph of every kept binary and fails if anything
@@ -201,11 +212,21 @@ print("pyinstaller.spec: trimmed %d bundle entries (PyQt5 modules and their "
 
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 
+# CORE2CHAT_ONEFILE=1 switches this spec to a single-executable build so that
+# both outputs come from ONE definition of hidden imports, datas and excludes.
+# (build.py used to pass raw --onefile flags instead, which silently skipped
+# the trimming and the asset list below - two different bundles, one spec.)
+_ONEFILE = os.environ.get("CORE2CHAT_ONEFILE", "").strip().lower() in (
+    "1", "true", "yes", "on")
+print("pyinstaller.spec: mode=%s" % ("onefile" if _ONEFILE else "onedir"))
+
 exe = EXE(
     pyz,
     a.scripts,
-    [],
-    exclude_binaries=True,
+    a.binaries if _ONEFILE else [],
+    a.zipfiles if _ONEFILE else [],
+    a.datas if _ONEFILE else [],
+    exclude_binaries=not _ONEFILE,
     name="Core2Chat",
     debug=False,
     bootloader_ignore_signals=False,
@@ -222,13 +243,14 @@ exe = EXE(
     version="version_info.txt" if os.path.isfile("version_info.txt") else None,
 )
 
-coll = COLLECT(
-    exe,
-    a.binaries,
-    a.zipfiles,
-    a.datas,
-    strip=False,
-    upx=False,
-    upx_exclude=[],
-    name="Core2Chat",
-)
+if not _ONEFILE:
+    coll = COLLECT(
+        exe,
+        a.binaries,
+        a.zipfiles,
+        a.datas,
+        strip=False,
+        upx=False,
+        upx_exclude=[],
+        name="Core2Chat",
+    )

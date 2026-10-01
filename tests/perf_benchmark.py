@@ -49,6 +49,7 @@ def bench_startup(data_dir: str, baseline_rss: int) -> None:
     started = time.monotonic()
     context = AppContext()
     context.initialize()
+    context.settings.close_action = "exit"   # hermetic X: no ask-dialog
     core_ms = (time.monotonic() - started) * 1000.0
     record("core_startup (config+db+provider)", core_ms, "ms",
            "journal=%s" % context.db.journal_mode)

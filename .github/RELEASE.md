@@ -25,8 +25,14 @@ Artefakt release powinien powstać **na najstarszym wspieranym systemie**:
 :: Windows 7 SP1 x64, Python 3.8.x x64 (3.8.10 oficjalny albo 3.8.20 lokalny)
 python -m pip install -r requirements-dev.txt
 python build.py --check
-python build.py --mode release
+python build.py --mode release      :: onedir (zalecany dla Win7)
+python build.py --verify-dist       :: domknięcie zależności paczki
+python build.py --mode onefile      :: opcjonalnie: pojedynczy EXE (ten sam spec)
 ```
+
+CI produkuje oba artefakty (`Core2Chat-windows-x64-onedir` i
+`Core2Chat-windows-x64-onefile`) na `windows-2022`; build referencyjny i tak
+powinien powstać na Windows 7.
 
 Uwaga o interpreterze: jeżeli używasz nieoficjalnego buildu Pythona 3.8.20,
 artefakt oznacz w notatkach release jako zbudowany tym interpreterem. Oficjalny
@@ -54,21 +60,32 @@ Następnie **ręcznie** (to są testy, których CI nie zastąpi):
    kopiowanie kodu.
 5. Załącznik TXT: dołączyć, wysłać, model odczytuje treść.
 6. Klawiatura: `Enter` wysyła, `Shift+Enter` nowa linia, `Ctrl+L` fokus,
-   `Ctrl+N`, `Ctrl+K`, `Ctrl+,`, `Ctrl+Shift+C`.
-7. Tray: lewy klik (pokaż), prawy klik (menu), ustawienia, wstrzymaj sieć,
-   zakończ — **powtórzyć 5 razy**.
-8. Restart: START → CLOSE → START → CLOSE → START (pozycja, rozmiar,
+   `Ctrl+N`, `Ctrl+K`, `Ctrl+,`, `Ctrl+Shift+C`; **`Ctrl+C` na zaznaczonym
+   tekście wiadomości kopiuje** (kliknij wiadomość myszą i zaznacz fragment).
+7. Zamknięcie okna (X): dialog Anuluj / Zminimalizuj / Zamknij program —
+   Anuluj zostawia okno, Zminimalizuj chowa do tray, „Zapamiętaj wybór"
+   wyłącza pytanie (sprawdź w `%APPDATA%\Core2Chat\config.json`:
+   `close_action`); przywróć „Pytaj za każdym razem" w ustawieniach.
+8. Tray (menu domyślnie WYŁĄCZONE — funkcja zbuforowana): lewy klik, prawy
+   klik i dwuklik **przywracają okno** — powtórzyć 5 razy. Opcjonalnie:
+   ustawienia → „Menu w ikonie zasobnika" → prawy klik otwiera menu
+   (pokaż / nowa rozmowa / ustawienia / wstrzymaj sieć / zakończ).
+9. Restart: START → CLOSE → START → CLOSE → START (pozycja, rozmiar,
    maksymalizacja, ostatnia rozmowa i historia muszą przetrwać).
-9. Skrót globalny `Win+C`: pokazuje okno i ustawia fokus na polu wpisywania.
-   Jeśli skrót jest zajęty, aplikacja musi działać dalej i pokazać komunikat.
-10. Pomiar: RSS w spoczynku (Menedżer zadań → „Zestaw roboczy"), czas startu.
+10. Skrót globalny `Win+C`: pokazuje okno i ustawia fokus na polu wpisywania.
+    Jeśli skrót jest zajęty, aplikacja musi działać dalej i pokazać komunikat.
+11. Pomiar: RSS w spoczynku (Menedżer zadań → „Zestaw roboczy"), czas startu.
+12. Bloki kodu: nagłówek z językiem i licznikiem linii, przycisk „Kopiuj",
+    kolorowanie składni widoczne (Pygments) — odpowiedź streamowana najpierw
+    bez kolorów, kolory pojawiają się przy finalizacji (to projekt, nie błąd).
 
 ## Krok 3 — publikacja
 
 1. Utworzyć tag: `git tag -a vX.Y.Z -m "..." && git push origin vX.Y.Z`.
 2. Workflow `CI` zbuduje artefakty i utworzy **draft** release.
 3. Dołączyć binarium z Windows 7 (Krok 1) jako `Core2Chat-windows7-x64.zip` —
-   to jest artefakt referencyjny; build z CI zostaje jako dodatkowy.
+   to jest artefakt referencyjny; dwa buildy z CI (onedir + onefile) zostają
+   jako dodatkowe.
 4. Uzupełnić notatki o wyniki testów z Kroku 2 (PASS/FAIL per punkt).
 5. Opublikować release.
 

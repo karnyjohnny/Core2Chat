@@ -41,6 +41,7 @@ def stack(tmp_path, monkeypatch, app):
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     context = AppContext()
     context.initialize()
+    context.settings.close_action = "exit"   # hermetic X: no ask-dialog
     provider = FakeProvider()
     context.registry.register(provider)
     chat = ChatService(context)

@@ -2,9 +2,11 @@
 
 Lekki, **natywny** desktopowy klient AI do rozmów z Google Gemini — bez silnika przeglądarki, bez Electrona, bez Chromium. Zaprojektowany tak, żeby działał płynnie także na starym sprzęcie (Windows 7, 2–4 GB RAM, dysk talerzowy).
 
-> Status: **v0.1.1** — wydanie stabilizacyjne po testach na Windows 7 SP1.
+> Status: **v0.1.2** — wydanie stabilizacyjne po testach na Windows 7 SP1.
 > Naprawiono crash przy drugim uruchomieniu, obsługę `Enter`, wyciek widgetów,
-> kontrast tabel i cykl życia zasobnika; usunięto Quick Chat.
+> kontrast tabel i cykl życia zasobnika; usunięto Quick Chat; kolorowanie
+> składni działa na **Pygments** (575 języków, własna paleta VS Code);
+> zamknięcie okna pyta o wybór (Anuluj / Zminimalizuj / Zamknij).
 > Szczegóły w [CHANGELOG](CHANGELOG.md) i w sekcji
 > [Status weryfikacji](#status-weryfikacji).
 
@@ -41,23 +43,25 @@ Przeglądarkowe interfejsy AI potrafią zajmować kilkaset megabajtów RAM i roz
 - **PyQt5** zamiast silnika webowego,
 - **SQLite (WAL)** jako lokalna baza historii,
 - **httpx** jako jedyny stos HTTP (importowany leniwie),
-- **zero dodatkowych zależności runtime** poza dwiema powyższymi.
+- **Pygments** jako jedyna dodatkowa zależność — kolorowanie składni w 575
+  językach zamiast ręcznej tabeli regexów dla 15 (import leniwy; bez niej
+  kod renderuje się jako eskejpowany tekst, nigdy nie znika).
 
 ## Funkcje
 
-Zaimplementowane (stan na v0.1.1):
+Zaimplementowane (stan na v0.1.2):
 
 | Obszar | Funkcje |
 |---|---|
-| Rozmowa | nowa rozmowa, wysyłanie, **streaming SSE**, stop generowania, ponowienie, edycja i ponowne wysłanie, kopiowanie tekstu i pojedynczych bloków kodu |
+| Rozmowa | nowa rozmowa, wysyłanie, **streaming SSE**, stop generowania, ponowienie, edycja i ponowne wysłanie, kopiowanie tekstu i pojedynczych bloków kodu, `Ctrl+C` na zaznaczeniu, zawsze widoczne ikony akcji, zwijanie długich wiadomości użytkownika |
 | Modele | wykrywanie modeli z API (`models.list`), filtry cyklu życia, metadane (limity tokenów, metody, thinking), ręczne odświeżenie, krótkożyciowy cache |
-| Renderowanie | Markdown → sanityzowany HTML w `QTextDocument`: nagłówki, listy (zagnieżdżone), tabele, cytaty, task listy, linki, **kolorowanie składni** 15+ języków bez Pygments |
+| Renderowanie | Markdown → sanityzowany HTML w `QTextDocument`: nagłówki, listy (zagnieżdżone), tabele, cytaty, task listy, linki, **kolorowanie składni Pygments** (575 języków, własna paleta VS Code Dark/Light+), bloki kodu z nagłówkiem i przyciskiem „Kopiuj" |
 | Kontekst | miernik kontekstu (`12 540 / 1 000 000 tok.`), okno przesuwne, przypinanie kontekstu, pre-flight `countTokens`, automatyczne skracanie z jawnym komunikatem |
 | Tokeny | statystyki 1 h / 24 h / całość, podział: wejście, wyjście, myślenie, cache, narzędzia; filtry wg modelu, dostawcy i rozmowy |
 | Załączniki | pliki tekstowe i kod, obrazy (PNG/JPG/WEBP), PDF; detekcja po magic bytes, limity rozmiaru, kodowanie UTF-8/BOM/cp1250, podglądy |
 | Historia | trwałe sesje, zmiana nazwy, usuwanie, archiwizacja, przypinanie, **rozgałęzianie (fork)**, czyszczenie, wyszukiwanie z podglądem i skokiem do wiadomości, stronicowanie |
 | Eksport | Markdown, TXT, JSON (wersjonowany schemat), HTML; import JSON |
-| System | ikona w zasobniku, zamykanie do zasobnika, **globalny skrót Win+C** (Quick Chat), jedna instancja aplikacji |
+| System | ikona w zasobniku (menu domyślnie wyłączone — funkcja zbuforowana), **dialog zamknięcia okna** (Anuluj / Zminimalizuj / Zamknij + „zapamiętaj wybór"), **globalny skrót Win+C** (pokazuje główne okno i ustawia fokus na polu), jedna instancja aplikacji |
 | Bezpieczeństwo | klucz API w **DPAPI** (Windows) z udokumentowanym fallbackiem, redakcja sekretów w logach, sanityzowana diagnostyka |
 | Diagnostyka | inspektor kontekstu, okno diagnostyki z kopiowaniem, logi strukturalne |
 
@@ -69,7 +73,8 @@ Skróty klawiszowe: `Ctrl+N` nowa rozmowa · `Ctrl+K` szukaj · `Ctrl+L` fokus n
 |---|---|---|
 | Python | **3.8.x** (3.8.10 w CI) | kod jest trzymany w składni 3.8; pilnuje tego test `tests/test_py38_compat.py`. 3.8.10 to ostatnia wersja 3.8 z oficjalnymi binariami python.org — 3.8.11+ są wydawane tylko jako źródła, więc CI nie może ich zainstalować. Lokalny build 3.8.20 (nieoficjalny) również działa. |
 | PyQt5 | **5.15.11** | QtWebEngine / PySide / PyQt6 są zabronione i wykluczone z builda |
-| httpx | **0.28.1** | jedyny stos HTTP |
+| httpx | **0.28.1** | jedyny stos HTTP; import leniwy (~11 MB RSS dopiero po pierwszym żądaniu) |
+| Pygments | **2.17.2** | kolorowanie składni (575 lexerów); import leniwy, bez niego kod renderuje się bez kolorów |
 | System | Windows 7 i nowsze | dev/testy działają też na Linuksie i macOS |
 
 Zabronione w tym projekcie: `QtWebEngine`, `QtWebKit`, `PySide2/6`, `PyQt6`, `Electron`, `Tauri`, `Chromium`, `qasync`, `google-genai`.
@@ -97,7 +102,6 @@ python main.py --version
 python main.py --portable        # dane obok programu
 python main.py --data-dir D:\c2c # własny katalog danych
 python main.py --new-chat        # start z nową rozmową
-python main.py --quick-chat      # start + szybki czat
 python main.py --no-tray         # bez ikony w zasobniku
 python main.py --console-log     # logi na stdout
 python main.py --smoke-test 1.5  # start -> ćwiczenie UI -> czyste zamknięcie
@@ -167,35 +171,36 @@ python tests/perf_benchmark.py --json performance.json
 
 Mierzone są: start (core / Qt / budowa okna / pierwszy paint), RSS w spoczynku z rozbiciem na warstwy, operacje bazodanowe, renderowanie Markdown i kolorowanie składni, koszt streamingu, odczyt dużego załącznika oraz to, **czy pamięć wraca po zamknięciu rozmowy**.
 
-Wyniki z kontenera developerskiego (Debian 12, Python 3.11, PyQt5 5.15.14, offscreen):
+Wyniki z kontenera developerskiego (Debian 12, Python 3.11, PyQt5 5.15.11 /
+Qt 5.15.19, offscreen), pomiar 2026-09-29 po przejściu na Pygments:
 
 | Metryka | Wynik |
 |---|---|
-| start rdzenia (config + SQLite + graf dostawcy) | **3,6 ms** |
-| budowa `QMainWindow` | **34 ms** |
-| start całkowity (core + Qt + UI + show) | **≈90 ms** |
+| start rdzenia (config + SQLite + graf dostawcy) | **2,4 ms** |
+| budowa `QMainWindow` | **23 ms** |
+| start całkowity (core + Qt + UI + show) | **≈50 ms** |
 | RSS: sam Python | 11,9 MB |
-| RSS: po starcie rdzenia (bez Qt) | 26,3 MB |
-| RSS: po imporcie PyQt5 | 49,3 MB |
-| **RSS w spoczynku (okno otwarte, brak wysłanego żądania)** | **62,2–63,1 MB** |
+| RSS: po starcie rdzenia (bez Qt) | 21,9 MB |
+| RSS: po imporcie PyQt5 | 45,0 MB |
+| **RSS w spoczynku (okno otwarte, brak wysłanego żądania)** | **63,2 MB** |
 | RSS po pierwszym żądaniu do API (dochodzi httpx) | ≈72–74 MB |
-| w tym narzut własny Core2Chat (ponad Python+PyQt5) | ≈17–21 MB |
-| insert 1000 wiadomości | 34 ms (0,034 ms/wiadomość) |
-| wczytanie 1000 wierszy sesji | 8,2 ms |
-| strona historii (60 wiadomości) | 1,0 ms |
-| wyszukiwanie po 1000 wiadomościach | 5,8 ms |
-| render 100 wiadomości (Markdown) | 0,36 ms/szt. |
-| kolorowanie 20 bloków kodu | 0,79 ms/blok |
-| te same bloki w trybie streamingu | 0,15 ms/blok (kolorowanie pomijane) |
-| GUI: 100 wiadomości jako widgety | 296 ms, +15,7 MB |
-| GUI: 200 tokenów streamingu | 80 ms (throttling 60 ms, tylko aktywna wiadomość) |
+| w tym narzut własny Core2Chat (ponad Python+PyQt5) | ≈21 MB |
+| insert 1000 wiadomości | 17 ms (0,017 ms/wiadomość) |
+| wczytanie 1000 wierszy sesji | 11,1 ms |
+| strona historii (60 wiadomości) | 0,7 ms |
+| wyszukiwanie po 1000 wiadomościach | 3,0 ms |
+| render 100 wiadomości (Markdown) | 0,26 ms/szt. |
+| kolorowanie 20 bloków kodu (Pygments, przy finalizacji) | **13,8 ms/blok** |
+| te same bloki w trybie streamingu | 0,11 ms/blok (kolorowanie pomijane) |
+| GUI: 100 wiadomości jako widgety | 255 ms (2,6 ms/szt.), +37 MB |
+| GUI: 200 tokenów streamingu | 22 ms (throttling 60 ms, tylko aktywna wiadomość) |
 | **GUI: przyrost RSS po wyczyszczeniu transkryptu** | **0,0 MB** (pamięć zwracana) |
-| odczyt załącznika tekstowego ~1 MB | 5,8 ms |
+| odczyt załącznika tekstowego ~1 MB | 3,7 ms |
 
 Wnioski z pomiarów, które przełożyły się na kod:
 
 - `import httpx` kosztuje **+11 MB RSS**, dlatego httpx jest importowany leniwie (`api/_lazy_httpx.py`) — aplikacja w spoczynku, która nie wysłała jeszcze żądania, w ogóle go nie ładuje. Test `test_httpx_is_not_imported_until_a_request_is_made` pilnuje tego w czystym interpreterze. Konsekwencja jest uczciwie raportowana: po pierwszym żądaniu RSS rośnie o te ~11 MB.
-- Kolorowanie składni jest pomijane podczas streamingu i uruchamiane raz, przy finalizacji wiadomości.
+- Kolorowanie składni jest pomijane podczas streamingu i uruchamiane raz, przy finalizacji wiadomości. Koszt Pygments (~14 ms/blok, ~7 MB RSS po pierwszym imporcie) jest świadomą zamianą: 575 lexerów i poprawna tokenizacja (zagnieżdżone łańcuchy, komentarze wieloliniowe, heredocs) zamiast ręcznej tabeli regexów dla 15 języków; w ścieżce streamingu kolorowania nie ma wcale (0,11 ms/blok).
 - Token nie powoduje re-renderu całego transkryptu — test `test_streaming_updates_only_the_active_message` dowodzi, że pozostałe wiadomości nie są renderowane ani razu.
 - Historia jest stronicowana (60 wiadomości na stronę); 500 wiadomości nie tworzy 500 widgetów.
 
@@ -216,9 +221,11 @@ api/       BaseProvider, HttpClient, normalizacja błędów, capability rules,
            adapter Gemini (interactions / models / tokens / files / cache)
 services/  AppContext (graf obiektów), ChatService (orchestracja generacji),
            SessionService, Export/Import, workerzy QRunnable
-gui/       MainWindow, Sidebar, ChatWidget, MessageWidget, SmartInput,
-           selektor modelu, okna dialogowe, Quick Chat, motyw QSS
-utils/     ścieżki, MIME, tekst, pomiar czasu/pamięci, Markdown, highlighter
+gui/       MainWindow, Sidebar, ChatWidget, MessageWidget (segmenty: tekst /
+           kod / user), CodeBlock, SmartInput, selektor modelu, dialogi
+           (ustawień, zamknięcia, kontekstu), motyw (paleta + QSS + CSS dokumentu)
+utils/     ścieżki, MIME, tekst, pomiar czasu/pamięci, Markdown,
+           highlighter (Pygments + własna paleta Core2Style)
 ```
 
 Zasady, które są egzekwowane w kodzie:
@@ -250,7 +257,7 @@ Możliwości (capabilities) **nigdy nie są zgadywane z nazwy modelu**. Pochodz�
 3. **sond** — mikrozapytań potwierdzających np. wejście obrazkowe,
 4. **obserwacji realnego ruchu** (np. `total_cached_tokens > 0` dowodzi trafienia w cache).
 
-Dodanie OpenAI / Anthropic / Ollama to nowa podklasa w `api/` — bez zmian w GUI.
+Program jest **tylko dla Gemini** — warstwa `api/` to wewnętrzny szew (osobny moduł na transport, osobny na mapowanie odpowiedzi), a nie zapowiedź obsługi innych dostawców.
 
 ## Gemini Interactions API — zweryfikowane fakty
 
@@ -290,7 +297,14 @@ python build.py --check          # walidacja spec + skan sekretów (bez builda)
 python build.py --mode release   # onedir, windowed  (zalecane)
 python build.py --mode debug     # onedir + logi na konsoli
 python build.py --mode onefile   # pojedynczy plik (wolniejszy cold start)
+python build.py --verify-dist    # domknięcie zależności zbudowanej paczki
 ```
+
+Oba tryby uruchamiają **ten sam `pyinstaller.spec`** — onefile przełącza zmienna
+środowiskowa `CORE2CHAT_ONEFILE=1` (ustawiana przez `build.py`), więc hidden
+imports (w tym ~600 modułów Pygments), zasoby, excludes i przycinanie bundla są
+identyczne dla obu wyjść. Surowe `pyinstaller --onefile main.py` omija
+przycinanie i dlatego nie jest wspierane.
 
 `build.py` **przerywa build**, gdy znajdzie niezadeklarowany ciąg przypominający klucz. Fixture'y testowe z celowo fałszywymi kluczami muszą mieć marker `core2chat:allow-fake-secret`.
 
@@ -311,7 +325,8 @@ Utwórz pusty plik `portable.flag` obok `Core2Chat.exe` (albo użyj `--portable`
 
 ## Znane ograniczenia
 
-- **Pakowanie nie zostało zweryfikowane uruchomieniem** w tym środowisku (patrz status). Build na Windows jest krokiem do wykonania na maszynie docelowej.
+- **Pakowanie nie zostało zweryfikowane uruchomieniem** w tym środowisku (patrz status). Build EXE weryfikuje CI (windows-2022, artefakty onedir + onefile) oraz procedura na Windows 7 w `.github/RELEASE.md`.
+- Pygments kosztuje ~7 MB RSS po pierwszym imporcie i ~14 ms na blok kodu przy finalizacji wiadomości (streaming kolorowania nie używa). Bez Pygments aplikacja działa dalej — kod renderuje się jako eskejpowany tekst bez kolorów.
 - Cel 60 MB RSS: zmierzono **62,2 MB** w kontenerze Linux (Python 3.11 + PyQt5 5.15.14). Pomiar na Windows/PyInstaller może się różnić; liczba nie została zmanipulowana ani „dociągnięta" do celu.
 - Cancel po stronie serwera (`/interactions/{id}/cancel`) zwraca 404 — realne przerywanie działa przez zamknięcie strumienia; UI reaguje natychmiast, ale pełne zwolnienie gniazda następuje po nagłówkach odpowiedzi.
 - Wywołanie narzędziowe (function calling) jest przygotowane w modelu zdarzeń, ale nie ma jeszcze pętli wykonującej narzędzia w UI.
@@ -326,7 +341,6 @@ Utwórz pusty plik `portable.flag` obok `Core2Chat.exe` (albo użyj `--portable`
 2. Pętla function calling / tool use w UI.
 3. Tagi rozmów, podsumowania rozmów, „kontynuuj generowanie".
 4. Pełne tłumaczenie EN.
-5. Provider OpenAI-compatible i Ollama (ta sama warstwa `BaseProvider`).
 
 ## Status weryfikacji
 
@@ -338,26 +352,27 @@ Zasada projektu: **brak dowodu = „niezweryfikowane", nie „zrobione"**.
 | Parser SSE i zdarzenia strumienia | PASS | `pytest tests/test_sse_parser.py` → 20 passed |
 | Adapter Gemini (fixture'y nagrane z live API) | PASS | `pytest tests/test_gemini_provider.py` → 64 passed |
 | Menedżer kontekstu | PASS | `pytest tests/test_context_manager.py` → 18 passed |
-| Markdown + kolorowanie + bezpieczeństwo HTML | PASS | `pytest tests/test_markdown.py` → 45 passed |
+| Markdown + kolorowanie (Pygments) + bezpieczeństwo HTML | PASS | `pytest tests/test_markdown.py` → 49 passed |
 | Bezpieczeństwo (DPAPI/fallback, redakcja, eksporty, diagnostyka) | PASS | `pytest tests/test_security.py` → 28 passed |
 | Załączniki | PASS | `pytest tests/test_attachments.py` → 27 passed |
 | Hotkey (RegisterHotKey, konflikty, fallback) | PASS | `pytest tests/test_hotkey.py` → 20 passed |
 | Single instance (blokada, przekazywanie komend, tryby awaryjne) | PASS | `pytest tests/test_single_instance.py` → 10 passed, 1 skipped (ścieżka Win32) |
 | Konfiguracja + migracja nazw ustawień | PASS | `pytest tests/test_config.py` → 19 passed |
-| Zgodność z Python 3.8 + zakazane zależności + spójność builda | PASS | `pytest tests/test_py38_compat.py` → 13 passed |
+| Zgodność z Python 3.8 + zakazane zależności + spójność builda | PASS | `pytest tests/test_py38_compat.py` → 13 passed + `python build.py --check` |
 | **Stan okna / persistence geometrii (P0.1)** | PASS | `pytest tests/test_window_state.py` → 30 passed |
 | **Restartowalność: cykle START→CLOSE→START, SIGKILL, WAL (P0.3)** | PASS | `pytest tests/integration/test_restart.py` → 8 passed |
 | **Maszyna stanów aplikacji (P1.3)** | PASS | `pytest tests/test_app_status.py` → 38 passed |
 | **Kontrast tabeli/list, dark i light mode (P1.2)** | PASS | `pytest tests/test_theme_contrast.py` → 17 passed |
-| **Tray lifecycle: 25 cykli, segfault guard (P1.1)** | PASS | `pytest tests/test_tray.py` → 19 passed |
+| **Tray lifecycle: 25 cykli, segfault guard, routing kliknięć bez menu (P1.1)** | PASS | `pytest tests/test_tray.py` → 20 passed |
 | Integracja GUI↔usługi↔SQLite (streaming, stop, race, fork, eksport) | PASS | `pytest tests/integration/test_chat_flow.py` → 22 passed |
 | **Regression lock funkcji z Windows 7 (§15)** | PASS | `pytest tests/test_regression_lock.py` → 34 passed |
 | Budżety wydajnościowe + regresja wycieku widgetów | PASS | `pytest tests/test_performance.py` → 16 passed |
 | Walidacja workflow CI/CD (§18) | PASS | `pytest tests/test_ci_workflow.py` → 16 passed |
-| **Łącznie** | **PASS** | `pytest` → **496 zebranych = 495 passed + 1 skipped (ścieżka Win32), ~85 s** |
+| **Dialog zamknięcia okna (P2/§2)** | PASS | `pytest tests/test_close_dialog.py` → 17 passed |
+| **Łącznie** | **PASS** | `pytest` → **518 zebranych = 517 passed + 1 skipped (ścieżka Win32), ~74 s** |
 | Live API Gemini | PASS | `python tests/live_gemini_smoke.py` → **18 PASS / 0 FAIL / 2 INFO**, exit 0 |
-| Start aplikacji end-to-end | PASS | `python main.py --smoke-test 1.5` → exit 0, `errors: []`, WAL, ~110 ms |
-| Build PyInstaller (spec, zasoby, przycinanie, domknięcie zależności) | PASS | `python build.py --mode release` → 123 MB, `--verify-dist`: 0 błędów |
+| Start aplikacji end-to-end | PASS | `python main.py --smoke-test 2 --no-tray` → exit 0, `errors: []`, WAL, idle RSS 67,8 MB (proces smoke'a) |
+| **Build EXE przez PyInstaller** | **NIEZWERYFIKOWANE w dev-kontenerze** | PyInstaller nie uruchamia się na niekompletnym stdlib kontenera (reprodukowalne dla „hello world" — wada środowiska, nie kodu); build weryfikuje CI na windows-2022 oraz test na Windows 7 (`.github/RELEASE.md`) |
 | **Uruchomienie `Core2Chat.exe` na Windows 7** | **DO WYKONANIA U CIEBIE** | kontener dev nie uruchamia frozen binary (niespójny stdlib interpretera — reprodukowalne dla „hello world"); procedura: `.github/RELEASE.md` |
 | Pomiar RSS/startu na Windows 7 | **DO WYKONANIA U CIEBIE** | brak maszyny z Windows w środowisku dev |
 
